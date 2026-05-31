@@ -1,0 +1,10 @@
+ALTER TABLE user_apps ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE user_apps ADD COLUMN role_in_app TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE user_apps ADD COLUMN quota_source TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE user_apps ADD COLUMN override_reason TEXT;
+ALTER TABLE user_apps ADD COLUMN updated_at TEXT;
+
+ALTER TABLE apps ADD COLUMN short_name TEXT;
+ALTER TABLE apps ADD COLUMN app_group TEXT;
+ALTER TABLE apps ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE apps ADD COLUMN updated_at TEXT;

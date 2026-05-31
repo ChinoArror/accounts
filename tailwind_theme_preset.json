@@ -1,0 +1,29 @@
+{
+  "theme": {
+    "extend": {
+      "colors": {
+        "bg": "var(--bg)",
+        "surface": "var(--surface)",
+        "surface-alt": "var(--surface-alt)",
+        "text-primary": "var(--text-primary)",
+        "text-secondary": "var(--text-secondary)",
+        "text-tertiary": "var(--text-tertiary)",
+        "border": "var(--border)",
+        "primary": "var(--primary)",
+        "success": "var(--success)",
+        "warning": "var(--warning)",
+        "danger": "var(--danger)"
+      },
+      "borderRadius": {
+        "sm": "10px",
+        "md": "12px",
+        "lg": "16px",
+        "xl": "20px"
+      },
+      "boxShadow": {
+        "card": "var(--shadow-card)",
+        "overlay": "var(--shadow-overlay)"
+      }
+    }
+  }
+}

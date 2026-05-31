@@ -1,0 +1,871 @@
+import React from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { CheckCircle2, Fingerprint, Github, KeyRound, LogOut, Mail, RefreshCw, Shield, Smartphone, UserCog } from 'lucide-react';
+import { motion } from 'motion/react';
+import { startAuthentication } from '@simplewebauthn/browser';
+import { ThemeToggle, useThemeMode } from './theme';
+
+const API_BASE = '';
+
+type Rules = {
+  mode: string;
+  start_at: string | null;
+  end_at: string | null;
+  email_registration_allowed: boolean;
+  invite_registration_allowed: boolean;
+  allowed_email_domains_hint: string;
+  turnstile_site_key?: string;
+  external_registration_enabled?: boolean;
+};
+
+function routeForToken(token: string, fallback = '/account/security') {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (payload.role === 'admin' || payload.uuid === 'admin') return '/dash';
+    return `/user/${payload.uuid || payload.sub}`;
+  } catch {
+    return fallback;
+  }
+}
+
+function AuthFrame({ title, children }: { title: string; children: React.ReactNode }) {
+  const { theme, setTheme } = useThemeMode('dark');
+  return (
+    <div data-theme={theme} className="dashboard-theme fixed inset-0 overflow-y-auto">
+      <div className="ui-auth-shell min-h-dvh items-start py-8 md:items-center">
+        <div className="absolute right-4 top-4 sm:right-6 sm:top-6">
+          <ThemeToggle theme={theme} onChange={setTheme} />
+        </div>
+        <motion.main
+          initial={{ opacity: 0, scale: 0.98, y: 18 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="ui-auth-card relative"
+        >
+          <div className="mb-6 flex justify-center">
+            <div className="ui-logo-badge">
+              <Shield className="h-7 w-7" />
+            </div>
+          </div>
+          <div className="mb-6 text-center">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Auth Center</p>
+            <h1 className="mt-3 text-[28px] font-bold leading-tight text-[var(--text-primary)]">{title}</h1>
+          </div>
+          {children}
+        </motion.main>
+      </div>
+    </div>
+  );
+}
+
+function WideFrame({ title, children }: { title: string; children: React.ReactNode }) {
+  const { theme, setTheme } = useThemeMode('dark');
+  return (
+    <div data-theme={theme} className="dashboard-theme min-h-dvh bg-[var(--bg)]">
+      <main className="mx-auto w-full max-w-6xl px-4 py-5 md:px-8 md:py-8">
+        <div className="mb-6 flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="ui-logo-badge h-11 w-11">
+              <Shield className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Auth Center</p>
+              <h1 className="truncate text-2xl font-bold text-[var(--text-primary)]">{title}</h1>
+            </div>
+          </div>
+          <ThemeToggle theme={theme} onChange={setTheme} />
+        </div>
+        {children}
+      </main>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-2 text-sm font-medium text-[var(--text-primary)]">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Notice({ children, tone = 'normal' }: { children: React.ReactNode; tone?: 'normal' | 'danger' | 'success' }) {
+  const color = tone === 'danger' ? 'text-[var(--danger)]' : tone === 'success' ? 'text-[var(--success)]' : 'text-[var(--text-secondary)]';
+  return <div className={`rounded-[12px] border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3 text-sm ${color}`}>{children}</div>;
+}
+
+function useRegistrationRules() {
+  const [rules, setRules] = React.useState<Rules | null>(null);
+  React.useEffect(() => {
+    fetch(`${API_BASE}/api/auth/registration/rules`)
+      .then((res) => res.json())
+      .then((data) => setRules(data.rules))
+      .catch(() => null);
+  }, []);
+  return rules;
+}
+
+function TurnstileBox({ siteKey, onToken, resetSignal = 0 }: { siteKey?: string; onToken: (token: string) => void; resetSignal?: number }) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  const widgetId = React.useRef<string | null>(null);
+  const onTokenRef = React.useRef(onToken);
+  React.useEffect(() => {
+    onTokenRef.current = onToken;
+  }, [onToken]);
+  React.useEffect(() => {
+    if (!siteKey || !ref.current) return;
+    const render = () => {
+      const turnstile = (window as any).turnstile;
+      if (!turnstile || !ref.current || ref.current.dataset.rendered) return;
+      ref.current.dataset.rendered = '1';
+      widgetId.current = turnstile.render(ref.current, {
+        sitekey: siteKey,
+        callback: (token: string) => onTokenRef.current(token),
+        'expired-callback': () => onTokenRef.current(''),
+      });
+    };
+    const existing = document.querySelector('script[data-turnstile-script="1"]') as HTMLScriptElement | null;
+    if (existing) {
+      render();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+    script.async = true;
+    script.defer = true;
+    script.dataset.turnstileScript = '1';
+    script.onload = render;
+    document.head.appendChild(script);
+  }, [siteKey]);
+
+  React.useEffect(() => {
+    if (!resetSignal || !widgetId.current) return;
+    const turnstile = (window as any).turnstile;
+    if (turnstile?.reset) {
+      turnstile.reset(widgetId.current);
+      onTokenRef.current('');
+    }
+  }, [resetSignal]);
+
+  if (!siteKey) return <Notice tone="danger">Turnstile is not configured.</Notice>;
+  return <div className="flex min-h-[70px] justify-center rounded-[12px]"><div ref={ref} /></div>;
+}
+
+async function apiPost(path: string, body: Record<string, unknown>) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.message || data.error || 'Request failed');
+  return data;
+}
+
+export function LandingPage() {
+  const { theme, setTheme } = useThemeMode('dark');
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const redirect = params.get('redirect') || params.get('redirect_uri');
+    const appId = params.get('app_id') || params.get('client_id');
+    if (redirect && appId) {
+      navigate(`/login?${params.toString()}`, { replace: true });
+      return;
+    }
+    fetch(`${API_BASE}/api/session`, { credentials: 'include' })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data?.active) return;
+        const role = data.user?.role || data.role;
+        const uuid = data.user?.uuid || data.user?.id || data.uuid;
+        navigate(role === 'admin' ? '/dash' : `/user/${uuid}`, { replace: true });
+      })
+      .catch(() => null);
+  }, [navigate]);
+
+  return (
+    <div data-theme={theme} className="dashboard-theme min-h-dvh overflow-hidden bg-[var(--bg)]">
+      <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-5 md:px-8">
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="ui-logo-badge h-11 w-11"><Shield className="h-5 w-5" /></div>
+            <span className="text-sm font-semibold text-[var(--text-primary)]">Auth Center</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link to="/login" className="ui-button-secondary no-underline">Login</Link>
+            <ThemeToggle theme={theme} onChange={setTheme} />
+          </div>
+        </header>
+
+        <main className="grid flex-1 items-center gap-8 py-10 lg:grid-cols-[1.05fr_0.95fr]">
+          <motion.section initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Unified sign-in</p>
+            <h1 className="mt-4 text-4xl font-bold leading-tight text-[var(--text-primary)] md:text-6xl">Auth Center</h1>
+            <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-secondary)]">One account for email, passkey, GitHub, and app SSO.</p>
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+              <Link to="/login" className="ui-button-primary inline-flex items-center justify-center gap-2 no-underline">
+                <KeyRound className="h-4 w-4" /> Sign in
+              </Link>
+              <Link to="/register" className="ui-button-secondary inline-flex items-center justify-center gap-2 no-underline">
+                <Mail className="h-4 w-4" /> Create account
+              </Link>
+            </div>
+          </motion.section>
+
+          <motion.section
+            initial={{ opacity: 0, scale: 0.97, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ delay: 0.08 }}
+            className="ui-card p-5 md:p-6"
+          >
+            <div className="grid gap-3">
+              {[
+                ['Password', 'Email or username'],
+                ['Email code', 'Six-digit login'],
+                ['Passkey', 'Fast device sign-in'],
+                ['GitHub', 'Bound account login'],
+              ].map(([title, text]) => (
+                <div key={title} className="ui-card-subtle flex items-center justify-between gap-4 p-4">
+                  <div>
+                    <p className="font-semibold text-[var(--text-primary)]">{title}</p>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{text}</p>
+                  </div>
+                  <CheckCircle2 className="h-5 w-5 text-[var(--success)]" />
+                </div>
+              ))}
+            </div>
+          </motion.section>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export function EmailLoginPage() {
+  const rules = useRegistrationRules();
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = React.useState<'password' | 'code'>('password');
+  const [identifier, setIdentifier] = React.useState('');
+  const [email, setEmail] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [code, setCode] = React.useState('');
+  const [codeSent, setCodeSent] = React.useState(false);
+  const [turnstile, setTurnstile] = React.useState('');
+  const [turnstileReset, setTurnstileReset] = React.useState(0);
+  const [message, setMessage] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const redirectUri = searchParams.get('redirect') || searchParams.get('redirect_uri') || '';
+  const appId = searchParams.get('app_id') || searchParams.get('client_id') || 'auth-center';
+
+  const login = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    try {
+      const data = await apiPost('/api/auth/login/email', { identifier, email: identifier, password, turnstile_token: turnstile, redirect_uri: redirectUri, app_id: appId });
+      const target = data.token ? routeForToken(data.token) : '/account/security';
+      if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
+      else localStorage.removeItem('sso_admin_auth');
+      window.location.href = data.redirect_to || target;
+    } catch (error: any) {
+      setMessage(error.message);
+      if (turnstile) {
+        setTurnstile('');
+        setTurnstileReset((value) => value + 1);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendOtp = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      const data = await apiPost('/api/auth/login/otp/send', { email, turnstile_token: turnstile });
+      setMessage(data.message);
+      setCodeSent(true);
+    } catch (error: any) {
+      setMessage(error.message);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyOtp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    try {
+      const data = await apiPost('/api/auth/login/otp/verify', { email, code, redirect_uri: redirectUri, app_id: appId });
+      const target = data.token ? routeForToken(data.token) : '/account/security';
+      if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
+      else localStorage.removeItem('sso_admin_auth');
+      window.location.href = data.redirect_to || target;
+    } catch (error: any) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const passkeyLogin = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      const optionsRes = await fetch(`${API_BASE}/api/passkey/generate-authentication-options`, { credentials: 'include' });
+      const options = await optionsRes.json();
+      const credential = await startAuthentication(options);
+      const query = redirectUri ? `?app_id=${encodeURIComponent(appId)}&app_redirect=${encodeURIComponent(redirectUri)}` : '';
+      const verifyRes = await fetch(`${API_BASE}/api/passkey/verify-authentication${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(credential),
+      });
+      const data = await verifyRes.json();
+      if (!verifyRes.ok || !data.verified) throw new Error(data.error || 'Passkey login failed');
+      const target = routeForToken(data.token);
+      if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
+      else localStorage.removeItem('sso_admin_auth');
+      window.location.href = redirectUri
+        ? `${redirectUri}${redirectUri.includes('?') ? '&' : '?'}token=${encodeURIComponent(data.token)}`
+        : target;
+    } catch (error: any) {
+      setMessage(error.message || 'Passkey login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const githubHref = redirectUri
+    ? `${API_BASE}/api/github/login?app_redirect=${encodeURIComponent(redirectUri)}&app_id=${encodeURIComponent(appId)}`
+    : `${API_BASE}/api/github/login`;
+
+  return (
+    <AuthFrame title="Sign in">
+      <div className="mb-5 grid grid-cols-2 gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-alt)] p-1">
+        <button className="ui-nav-pill flex items-center justify-center gap-2 px-3 py-2" data-active={tab === 'password'} onClick={() => setTab('password')} type="button">
+          <Mail className="h-4 w-4" /> Password
+        </button>
+        <button className="ui-nav-pill flex items-center justify-center gap-2 px-3 py-2" data-active={tab === 'code'} onClick={() => setTab('code')} type="button">
+          <KeyRound className="h-4 w-4" /> Code
+        </button>
+      </div>
+
+      {tab === 'password' ? (
+        <form onSubmit={login} className="space-y-4">
+          <Field label="Email or name"><input required value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" /></Field>
+          <Field label="Password"><input type="password" required value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></Field>
+          {message.includes('Turnstile') || message.includes('人机') ? <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} /> : null}
+          <button className="ui-button-primary w-full" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button className="ui-button-secondary flex items-center justify-center gap-2" type="button" onClick={passkeyLogin} disabled={loading}>
+              <Fingerprint className="h-4 w-4" /> Passkey
+            </button>
+            <a className="ui-button-secondary flex items-center justify-center gap-2 no-underline" href={githubHref}>
+              <Github className="h-4 w-4" /> GitHub
+            </a>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={verifyOtp} className="space-y-4">
+          <Field label="Email"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></Field>
+          {!codeSent ? <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} /> : null}
+          {!codeSent ? (
+            <button className="ui-button-primary w-full" type="button" onClick={sendOtp} disabled={loading || !email || !turnstile}>Send code by email</button>
+          ) : (
+            <>
+              <Field label="Six-digit code"><input inputMode="numeric" maxLength={6} required value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} /></Field>
+              <button className="ui-button-primary w-full" disabled={loading || code.length !== 6}>{loading ? 'Signing in...' : 'Sign in'}</button>
+            </>
+          )}
+        </form>
+      )}
+
+      {message ? <div className="mt-4"><Notice>{message}</Notice></div> : null}
+      <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 text-sm">
+        <Link to="/forgot-password" className="font-semibold text-[var(--primary)] no-underline">Forgot password</Link>
+        <Link to="/register" className="font-semibold text-[var(--primary)] no-underline">Create account</Link>
+      </div>
+    </AuthFrame>
+  );
+}
+
+export function RegisterEmailPage() {
+  const rules = useRegistrationRules();
+  const navigate = useNavigate();
+  const [form, setForm] = React.useState({ email: '', username: '', fullname: '', password: '', register_code: '', birthday: '', avatar_data: '' });
+  const [turnstile, setTurnstile] = React.useState('');
+  const [turnstileReset, setTurnstileReset] = React.useState(0);
+  const [message, setMessage] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+
+  const readAvatar = (file?: File) => {
+    if (!file) {
+      setForm((current) => ({ ...current, avatar_data: '' }));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setForm((current) => ({ ...current, avatar_data: String(reader.result || '') }));
+    reader.readAsDataURL(file);
+  };
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    try {
+      const data = await apiPost('/api/auth/register', { ...form, confirm_password: form.password, turnstile_token: turnstile });
+      navigate(`/verify-email?email=${encodeURIComponent(form.email)}&message=${encodeURIComponent(data.message)}`);
+    } catch (error: any) {
+      setMessage(error.message);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AuthFrame title="Create account">
+      <div className="mb-5">
+        <Notice>{!rules ? 'Loading registration rules...' : rules.email_registration_allowed && rules.external_registration_enabled !== false ? 'Public registration is open.' : 'Public registration is closed.'}</Notice>
+      </div>
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Email"><input type="email" required value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field>
+        <Field label="Username"><input required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></Field>
+        <Field label="Full name"><input required value={form.fullname} onChange={(event) => setForm({ ...form, fullname: event.target.value })} /></Field>
+        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></Field>
+        <Field label="Register code"><input value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Birthday"><input type="date" value={form.birthday} onChange={(event) => setForm({ ...form, birthday: event.target.value })} /></Field>
+          <Field label="Avatar"><input type="file" accept="image/*" onChange={(event) => readAvatar(event.target.files?.[0])} /></Field>
+        </div>
+        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
+        <button className="ui-button-primary w-full" disabled={loading || !turnstile || !rules?.email_registration_allowed || rules.external_registration_enabled === false}>{loading ? 'Creating...' : 'Create account'}</button>
+      </form>
+      {message ? <div className="mt-4"><Notice tone="danger">{message}</Notice></div> : null}
+      <Link to="/login" className="mt-5 block text-center font-semibold text-[var(--primary)] no-underline">Back to sign in</Link>
+    </AuthFrame>
+  );
+}
+
+export function RegisterCodePage() {
+  const rules = useRegistrationRules();
+  const [form, setForm] = React.useState({ username: '', password: '', confirm_password: '', register_code: '' });
+  const [turnstile, setTurnstile] = React.useState('');
+  const [turnstileReset, setTurnstileReset] = React.useState(0);
+  const [message, setMessage] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    try {
+      await apiPost('/api/auth/register/code', { ...form, turnstile_token: turnstile });
+      window.location.href = '/account/security';
+    } catch (error: any) {
+      setMessage(error.message);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AuthFrame title="Register code">
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Username"><input required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></Field>
+        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></Field>
+        <Field label="Confirm password"><input type="password" required value={form.confirm_password} onChange={(event) => setForm({ ...form, confirm_password: event.target.value })} /></Field>
+        <Field label="Register code"><input required value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
+        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
+        <button className="ui-button-primary w-full" disabled={loading || !turnstile || rules?.invite_registration_allowed === false}>{loading ? 'Creating...' : 'Create account'}</button>
+      </form>
+      {message ? <div className="mt-4"><Notice tone="danger">{message}</Notice></div> : null}
+      <Link to="/login" className="mt-5 block text-center font-semibold text-[var(--primary)] no-underline">Back to sign in</Link>
+    </AuthFrame>
+  );
+}
+
+export function VerifyEmailNoticePage() {
+  const rules = useRegistrationRules();
+  const [searchParams] = useSearchParams();
+  const [email, setEmail] = React.useState(searchParams.get('email') || '');
+  const [turnstile, setTurnstile] = React.useState('');
+  const [turnstileReset, setTurnstileReset] = React.useState(0);
+  const [message, setMessage] = React.useState(searchParams.get('message') || (searchParams.get('status') === 'success' ? 'Email verified.' : 'Check your inbox.'));
+  const [loading, setLoading] = React.useState(false);
+
+  const resend = async () => {
+    setLoading(true);
+    try {
+      const data = await apiPost('/api/auth/email/verify/resend', { email, turnstile_token: turnstile });
+      setMessage(data.message);
+    } catch (error: any) {
+      setMessage(error.message);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AuthFrame title="Verify email">
+      <div className="space-y-4">
+        <Notice tone={searchParams.get('status') === 'success' ? 'success' : 'normal'}>{message}</Notice>
+        <Field label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
+        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
+        <button className="ui-button-primary flex w-full items-center justify-center gap-2" onClick={resend} disabled={loading || !email || !turnstile}>
+          <RefreshCw className="h-4 w-4" /> Resend email
+        </button>
+        <Link to="/login" className="ui-button-secondary flex w-full items-center justify-center no-underline">Back to sign in</Link>
+      </div>
+    </AuthFrame>
+  );
+}
+
+export function ForgotPasswordPage() {
+  const rules = useRegistrationRules();
+  const [email, setEmail] = React.useState('');
+  const [turnstile, setTurnstile] = React.useState('');
+  const [turnstileReset, setTurnstileReset] = React.useState(0);
+  const [message, setMessage] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const data = await apiPost('/api/auth/password/forgot', { email, turnstile_token: turnstile });
+      setMessage(data.message);
+    } catch (error: any) {
+      setMessage(error.message);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <AuthFrame title="Reset password">
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Email"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
+        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
+        <button className="ui-button-primary w-full" disabled={loading || !turnstile}>{loading ? 'Sending...' : 'Send reset email'}</button>
+      </form>
+      {message ? <div className="mt-4"><Notice>{message}</Notice></div> : null}
+    </AuthFrame>
+  );
+}
+
+export function ResetPasswordPage() {
+  const [searchParams] = useSearchParams();
+  const [newPassword, setNewPassword] = React.useState('');
+  const [confirm, setConfirm] = React.useState('');
+  const [message, setMessage] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const data = await apiPost('/api/auth/password/reset', { token: searchParams.get('token'), new_password: newPassword, confirm_password: confirm });
+      setMessage(data.message);
+    } catch (error: any) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <AuthFrame title="New password">
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="New password"><input type="password" required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field>
+        <Field label="Confirm password"><input type="password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} /></Field>
+        <button className="ui-button-primary w-full" disabled={loading}>{loading ? 'Saving...' : 'Save password'}</button>
+      </form>
+      {message ? <div className="mt-4"><Notice>{message}</Notice></div> : null}
+    </AuthFrame>
+  );
+}
+
+export function AccountSecurityPage() {
+  const rules = useRegistrationRules();
+  const [user, setUser] = React.useState<any>(null);
+  const [sessions, setSessions] = React.useState<any[]>([]);
+  const [currentSessionId, setCurrentSessionId] = React.useState('');
+  const [message, setMessage] = React.useState('');
+  const [emailForm, setEmailForm] = React.useState({ new_email: '', password: '', turnstile: '' });
+  const [emailTurnstileReset, setEmailTurnstileReset] = React.useState(0);
+  const [passwordForm, setPasswordForm] = React.useState({ old_password: '', new_password: '', confirm_password: '' });
+  const [registerCode, setRegisterCode] = React.useState('');
+
+  const load = React.useCallback(async () => {
+    const me = await fetch(`${API_BASE}/api/account/me`, { credentials: 'include' });
+    if (!me.ok) {
+      window.location.href = '/login';
+      return;
+    }
+    const meData = await me.json();
+    setUser(meData.user);
+    const sessionRes = await fetch(`${API_BASE}/api/account/sessions`, { credentials: 'include' });
+    const sessionData = await sessionRes.json();
+    setSessions(sessionData.sessions || []);
+    setCurrentSessionId(sessionData.current_session_id || '');
+  }, []);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const data = await apiPost('/api/account/password/change', passwordForm);
+      setMessage(data.message);
+      setPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+    } catch (error: any) {
+      setMessage(error.message);
+      setEmailForm((current) => ({ ...current, turnstile: '' }));
+      setEmailTurnstileReset((value) => value + 1);
+    }
+  };
+
+  const changeEmail = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const data = await apiPost('/api/account/email/change/request', { new_email: emailForm.new_email, password: emailForm.password, turnstile_token: emailForm.turnstile });
+      setMessage(data.message);
+    } catch (error: any) {
+      setMessage(error.message);
+    }
+  };
+
+  const revoke = async (session_id: string) => {
+    await apiPost('/api/account/sessions/revoke', { session_id });
+    await load();
+  };
+
+  const revokeAll = async () => {
+    await apiPost('/api/account/sessions/revoke-all', {});
+    window.location.href = '/login';
+  };
+
+  const applyRegisterCode = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const data = await apiPost('/api/account/register-code/apply', { register_code: registerCode });
+      setMessage(data.message);
+      setRegisterCode('');
+    } catch (error: any) {
+      setMessage(error.message);
+    }
+  };
+
+  return (
+    <WideFrame title="Account Security">
+      {!user ? <Notice>Loading...</Notice> : (
+        <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+          <section className="ui-card p-5 md:p-6">
+            <div className="mb-5 grid gap-3 sm:grid-cols-2">
+              <div className="ui-card-subtle p-4">
+                <p className="text-xs text-[var(--text-tertiary)]">Username</p>
+                <p className="mt-1 font-semibold">{user.username}</p>
+              </div>
+              <div className="ui-card-subtle p-4">
+                <p className="text-xs text-[var(--text-tertiary)]">Email</p>
+                <p className="mt-1 break-all font-semibold">{user.email || 'Not bound'}</p>
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">{user.email_verified ? 'Verified' : 'Not verified'}</p>
+              </div>
+            </div>
+            {!user.email ? <div className="mb-5"><Notice>Bind an email to recover your account.</Notice></div> : null}
+            {message ? <div className="mb-5"><Notice>{message}</Notice></div> : null}
+
+            <form onSubmit={changeEmail} className="space-y-4">
+              <h2 className="text-lg font-semibold">Email</h2>
+              <Field label="New email"><input type="email" placeholder="name@aryuki.com" value={emailForm.new_email} onChange={(event) => setEmailForm({ ...emailForm, new_email: event.target.value })} /></Field>
+              <Field label="Current password"><input type="password" value={emailForm.password} onChange={(event) => setEmailForm({ ...emailForm, password: event.target.value })} /></Field>
+              <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={(token) => setEmailForm((current) => ({ ...current, turnstile: token }))} resetSignal={emailTurnstileReset} />
+              <button className="ui-button-primary w-full" disabled={!emailForm.turnstile}>Send confirmation</button>
+            </form>
+          </section>
+
+          <section className="ui-card p-5 md:p-6">
+            <form onSubmit={changePassword} className="space-y-4">
+              <h2 className="text-lg font-semibold">Password</h2>
+              <Field label="Old password"><input type="password" value={passwordForm.old_password} onChange={(event) => setPasswordForm({ ...passwordForm, old_password: event.target.value })} /></Field>
+              <Field label="New password"><input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /></Field>
+              <Field label="Confirm password"><input type="password" value={passwordForm.confirm_password} onChange={(event) => setPasswordForm({ ...passwordForm, confirm_password: event.target.value })} /></Field>
+              <button className="ui-button-primary w-full">Update password</button>
+            </form>
+            <form onSubmit={applyRegisterCode} className="mt-6 space-y-4 border-t border-[var(--border)] pt-5">
+              <h2 className="text-lg font-semibold">Register code</h2>
+              <Field label="Code"><input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} /></Field>
+              <button className="ui-button-secondary w-full" disabled={!registerCode}>Apply configuration</button>
+            </form>
+          </section>
+
+          <section className="ui-card p-5 md:col-span-2 md:p-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="text-lg font-semibold">Devices</h2>
+              <button className="ui-button-secondary flex items-center justify-center gap-2" onClick={revokeAll} type="button">
+                <LogOut className="h-4 w-4" /> Sign out all
+              </button>
+            </div>
+            <div className="space-y-3">
+              {sessions.length === 0 ? <Notice>No sessions.</Notice> : sessions.map((session) => (
+                <div key={session.id} className="ui-card-subtle flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-2 font-medium"><Smartphone className="h-4 w-4" />{session.id === currentSessionId ? 'Current device' : 'Signed-in device'}</p>
+                    <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{session.user_agent || 'Unknown user agent'}</p>
+                    <p className="mt-1 text-xs text-[var(--text-tertiary)]">IP hash: {session.ip_hash || 'N/A'} · {session.created_at}</p>
+                  </div>
+                  <button className="ui-button-secondary" onClick={() => revoke(session.id)} disabled={!!session.revoked_at}>Sign out</button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+    </WideFrame>
+  );
+}
+
+export function AdminSecurityPage() {
+  const [section, setSection] = React.useState<'users' | 'codes' | 'rules' | 'logs' | 'emails'>('users');
+  const [data, setData] = React.useState<any>({});
+  const [message, setMessage] = React.useState('');
+  const authHeader = localStorage.getItem('sso_admin_auth') || '';
+
+  const adminFetch = React.useCallback(async (path: string, options?: RequestInit) => {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader, ...(options?.headers || {}) },
+      credentials: 'include',
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.ok === false) throw new Error(payload.error || payload.message || 'Request failed');
+    return payload;
+  }, [authHeader]);
+
+  const load = React.useCallback(async () => {
+    const paths = {
+      users: '/admin/auth/users',
+      codes: '/admin/auth/register-codes',
+      rules: '/admin/auth/registration-rules',
+      logs: '/admin/auth/audit-logs',
+      emails: '/admin/auth/email-jobs',
+    };
+    try {
+      setMessage('');
+      setData(await adminFetch(paths[section]));
+    } catch (error: any) {
+      setMessage(error.message);
+    }
+  }, [adminFetch, section]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const createCode = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    const payload = await adminFetch('/admin/auth/register-codes', {
+      method: 'POST',
+      body: JSON.stringify({
+        label: fd.get('label'),
+        role: fd.get('role'),
+        max_uses: fd.get('max_uses'),
+        expires_at: fd.get('expires_at'),
+      }),
+    });
+    setMessage(`Register code: ${payload.code}`);
+    await load();
+  };
+
+  return (
+    <WideFrame title="Security Admin">
+      <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          ['users', 'Users'],
+          ['codes', 'Codes'],
+          ['rules', 'Rules'],
+          ['logs', 'Logs'],
+          ['emails', 'Email Jobs'],
+        ].map(([id, label]) => (
+          <button key={id} className="ui-nav-pill flex items-center justify-center gap-2 px-4 py-2.5" data-active={section === id} onClick={() => setSection(id as any)} type="button">
+            {id === 'users' ? <UserCog className="h-4 w-4" /> : id === 'codes' ? <KeyRound className="h-4 w-4" /> : id === 'emails' ? <Mail className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
+            {label}
+          </button>
+        ))}
+      </div>
+      {message ? <div className="mb-4"><Notice>{message}</Notice></div> : null}
+
+      {section === 'users' ? (
+        <section className="ui-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-left text-sm">
+              <thead>
+                <tr><th className="p-3">ID</th><th className="p-3">User</th><th className="p-3">Email</th><th className="p-3">Verified</th><th className="p-3">Role</th><th className="p-3">Status</th><th className="p-3">Provider</th><th className="p-3">Created</th><th className="p-3">Actions</th></tr>
+              </thead>
+              <tbody>{(data.users || []).map((user: any) => (
+                <tr key={user.uuid || user.id} className="border-t border-[var(--border)]">
+                  <td className="max-w-[180px] truncate p-3 font-mono text-xs">{user.uuid || user.id}</td>
+                  <td className="p-3 font-medium">{user.username}</td>
+                  <td className="max-w-[180px] truncate p-3">{user.email || '-'}</td>
+                  <td className="p-3">{user.email_verified ? <CheckCircle2 className="h-4 w-4 text-[var(--success)]" /> : '-'}</td>
+                  <td className="p-3">{user.role}</td>
+                  <td className="p-3">{user.status}</td>
+                  <td className="p-3">{user.auth_provider}</td>
+                  <td className="p-3 text-xs text-[var(--text-secondary)]">{user.created_at}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-2">
+                      <button className="ui-button-secondary" onClick={() => adminFetch(`/admin/auth/users/${user.uuid || user.id}/status`, { method: 'POST', body: JSON.stringify({ status: user.status === 'disabled' ? 'active' : 'disabled' }) }).then(load)}>{user.status === 'disabled' ? 'Enable' : 'Disable'}</button>
+                      <button className="ui-button-secondary" onClick={() => adminFetch(`/admin/auth/users/${user.uuid || user.id}/role`, { method: 'POST', body: JSON.stringify({ role: user.role === 'admin' ? 'user' : 'admin' }) }).then(load)}>Role</button>
+                      <button className="ui-button-secondary" onClick={() => adminFetch(`/admin/auth/users/${user.uuid || user.id}/revoke-sessions`, { method: 'POST' }).then(load)}>Revoke</button>
+                      <button className="ui-button-secondary" onClick={() => adminFetch(`/admin/auth/users/${user.uuid || user.id}/send-reset`, { method: 'POST' }).then(load)}>Reset</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {section === 'codes' ? (
+        <section className="space-y-5">
+          <form onSubmit={createCode} className="ui-card grid gap-3 p-4 md:grid-cols-5">
+            <input name="label" placeholder="Label" />
+            <select name="role" defaultValue="user"><option value="user">user</option><option value="moderator">moderator</option><option value="admin">admin</option></select>
+            <input name="max_uses" type="number" min="1" placeholder="Max uses" />
+            <input name="expires_at" type="datetime-local" />
+            <button className="ui-button-primary">Create</button>
+          </form>
+          {(data.codes || []).map((code: any) => (
+            <div key={code.id || code.code} className="ui-card-subtle flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{code.label || code.template_name || 'Untitled code'}</p>
+                <p className="text-xs text-[var(--text-secondary)]">role {code.role} · used {code.used_count || 0}/{code.max_uses || '∞'} · expires {code.expires_at || 'never'}</p>
+              </div>
+              <button className="ui-button-secondary" onClick={() => adminFetch(`/admin/auth/register-codes/${code.id || code.code}/disable`, { method: 'POST' }).then(load)} disabled={!!code.disabled_at}>Disable</button>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      {section === 'rules' ? <pre className="ui-card-subtle overflow-auto p-4 text-xs">{JSON.stringify(data, null, 2)}</pre> : null}
+      {section === 'logs' ? <pre className="ui-card-subtle max-h-[560px] overflow-auto p-4 text-xs">{JSON.stringify(data.logs || [], null, 2)}</pre> : null}
+      {section === 'emails' ? <pre className="ui-card-subtle max-h-[560px] overflow-auto p-4 text-xs">{JSON.stringify(data.jobs || [], null, 2)}</pre> : null}
+    </WideFrame>
+  );
+}

@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Local generated artifacts
+output/
+.playwright-cli/
+*.log
+
+# Local Cloudflare state
+.wrangler/
+
+# Design/private working files
+.design/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secret.*
+*.pem
+*.key
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

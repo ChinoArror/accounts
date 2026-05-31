@@ -1,0 +1,307 @@
+{
+  "meta": {
+    "name": "minimal-dashboard-cloud-inspired",
+    "source": "screen recording visual extraction only",
+    "scope": "UI style only; excludes captcha, passkeys, auth flow logic",
+    "platform": "mobile-first responsive webapp",
+    "confidence": "medium"
+  },
+  "brand_style": {
+    "keywords": [
+      "minimal",
+      "clean",
+      "dashboard-like",
+      "soft-rounded",
+      "high legibility",
+      "lightweight enterprise",
+      "mobile-first"
+    ],
+    "design_principles": [
+      "Prioritize whitespace and scannability over decoration",
+      "Use cards, lists, and segmented tabs to structure information",
+      "Keep iconography thin, simple, and functional",
+      "Use one strong primary action color and otherwise neutral surfaces",
+      "Support light and dark modes with mirrored spacing and component structure"
+    ]
+  },
+  "color": {
+    "light": {
+      "bg": "#F5F5F5",
+      "surface": "#FFFFFF",
+      "surface_alt": "#F8F8F8",
+      "text_primary": "#111111",
+      "text_secondary": "#666666",
+      "text_tertiary": "#8A8A8A",
+      "border": "#E6E6E6",
+      "divider": "#EFEFEF",
+      "primary": "#1677FF",
+      "primary_hover": "#0F67E6",
+      "primary_active": "#0B57C4",
+      "success": "#18A058",
+      "warning": "#F5A623",
+      "danger": "#E5484D",
+      "input_bg": "#FFFFFF",
+      "overlay": "rgba(17,17,17,0.35)"
+    },
+    "dark": {
+      "bg": "#0B0B0C",
+      "surface": "#141416",
+      "surface_alt": "#1A1B1E",
+      "text_primary": "#F5F5F5",
+      "text_secondary": "#B5B5B8",
+      "text_tertiary": "#8C8D91",
+      "border": "#2A2B2F",
+      "divider": "#232428",
+      "primary": "#2F81FF",
+      "primary_hover": "#3D8BFF",
+      "primary_active": "#1F6DE3",
+      "success": "#2FBF71",
+      "warning": "#FFB020",
+      "danger": "#FF5D62",
+      "input_bg": "#17181B",
+      "overlay": "rgba(0,0,0,0.55)"
+    }
+  },
+  "radius": {
+    "xs": 8,
+    "sm": 10,
+    "md": 12,
+    "lg": 16,
+    "xl": 20,
+    "pill": 999
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 20,
+    "xxl": 24,
+    "section": 28
+  },
+  "typography": {
+    "font_family": "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "title": {
+      "size": 28,
+      "weight": 700,
+      "lineHeight": 1.2
+    },
+    "h1": {
+      "size": 24,
+      "weight": 700,
+      "lineHeight": 1.25
+    },
+    "h2": {
+      "size": 20,
+      "weight": 650,
+      "lineHeight": 1.3
+    },
+    "h3": {
+      "size": 18,
+      "weight": 650,
+      "lineHeight": 1.35
+    },
+    "body": {
+      "size": 14,
+      "weight": 400,
+      "lineHeight": 1.5
+    },
+    "body_small": {
+      "size": 13,
+      "weight": 400,
+      "lineHeight": 1.45
+    },
+    "caption": {
+      "size": 12,
+      "weight": 400,
+      "lineHeight": 1.4
+    },
+    "label": {
+      "size": 12,
+      "weight": 600,
+      "lineHeight": 1.3
+    },
+    "button": {
+      "size": 14,
+      "weight": 600,
+      "lineHeight": 1.2
+    }
+  },
+  "shadow": {
+    "light_card": "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)",
+    "light_overlay": "0 12px 40px rgba(0,0,0,0.14)",
+    "dark_card": "0 1px 2px rgba(0,0,0,0.25), 0 8px 28px rgba(0,0,0,0.35)",
+    "dark_overlay": "0 12px 44px rgba(0,0,0,0.55)"
+  },
+  "components": {
+    "page": {
+      "max_width_mobile": 480,
+      "gutter": 16,
+      "section_gap": 20,
+      "header_style": "simple title row with optional icon/action on right"
+    },
+    "card": {
+      "padding": 16,
+      "radius": 16,
+      "border": "1px solid token.border",
+      "shadow": "token.shadow.light_card/dark_card",
+      "usage": [
+        "dashboard metric",
+        "form group",
+        "list item",
+        "modal content"
+      ]
+    },
+    "input": {
+      "height": 44,
+      "radius": 10,
+      "padding_x": 12,
+      "border": "1px solid token.border",
+      "placeholder_color": "token.text_tertiary",
+      "focus_ring": "0 0 0 3px color-mix(primary 18%, transparent)"
+    },
+    "select": {
+      "height": 44,
+      "radius": 10,
+      "show_chevron": true
+    },
+    "button": {
+      "primary": {
+        "height": 44,
+        "radius": 12,
+        "padding_x": 16,
+        "fill": "token.primary",
+        "text": "#FFFFFF",
+        "style": "solid prominent CTA"
+      },
+      "secondary": {
+        "height": 40,
+        "radius": 12,
+        "padding_x": 14,
+        "fill": "transparent",
+        "border": "1px solid token.border",
+        "text": "token.text_primary"
+      },
+      "danger": {
+        "height": 36,
+        "radius": 10,
+        "fill": "token.danger",
+        "text": "#FFFFFF"
+      },
+      "icon_button": {
+        "size": 36,
+        "radius": 10,
+        "fill": "token.surface_alt",
+        "border": "1px solid token.border"
+      }
+    },
+    "tabs": {
+      "container": "low-contrast horizontal segmented navigation",
+      "height": 36,
+      "radius": 999,
+      "active_fill": "token.surface",
+      "inactive_text": "token.text_secondary",
+      "active_text": "token.text_primary"
+    },
+    "list_item": {
+      "min_height": 52,
+      "layout": "left title/meta, optional right status or chevron",
+      "divider": true
+    },
+    "metric_card": {
+      "title_size": 12,
+      "value_size": 24,
+      "supports": [
+        "tiny sparkline",
+        "delta badge"
+      ]
+    },
+    "top_nav": {
+      "mobile": "simple top bar or bottom tab bar",
+      "desktop": "left sidebar with icons and labels"
+    },
+    "modal_sheet": {
+      "radius_top": 20,
+      "overlay": "token.overlay",
+      "close_action": "small x at top-right"
+    },
+    "theme_toggle": {
+      "type": "segmented or icon toggle",
+      "states": [
+        "light",
+        "dark"
+      ],
+      "placement": "settings row, header action, or profile/preferences panel"
+    }
+  },
+  "iconography": {
+    "style": "outlined or lightly filled, rounded corners, low visual weight",
+    "size": [
+      16,
+      18,
+      20
+    ],
+    "stroke": 1.75,
+    "usage": [
+      "navigation",
+      "status",
+      "field leading/trailing icons",
+      "settings rows",
+      "metric cards"
+    ],
+    "recommendation": "Use Lucide, Heroicons, or Phosphor with consistent stroke weight"
+  },
+  "interaction": {
+    "motion": {
+      "fast": 120,
+      "normal": 180,
+      "slow": 240,
+      "easing": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+    },
+    "hover": "Subtle border or background tint shift only",
+    "active": "1-2% scale down or darker fill",
+    "focus": "Visible focus ring for keyboard accessibility",
+    "loading": "Inline spinner or skeleton rows; avoid full-screen blocking when possible"
+  },
+  "layout_patterns": {
+    "settings_page": {
+      "pattern": [
+        "page title",
+        "grouped settings cards",
+        "each row: label + current value + chevron",
+        "danger zone card at bottom"
+      ]
+    },
+    "dashboard_page": {
+      "pattern": [
+        "summary metrics at top",
+        "task/list cards below",
+        "compact actions",
+        "minimal chart accents"
+      ]
+    },
+    "auth_like_surface_only": {
+      "pattern": [
+        "centered logo",
+        "single-column form",
+        "large primary CTA",
+        "secondary SSO buttons below"
+      ],
+      "note": "Use only the visual pattern, not the verification or passkey logic"
+    }
+  },
+  "dos": [
+    "Keep surfaces flat and clean",
+    "Use consistent 12-16px radii",
+    "Limit accent colors to one primary plus semantic states",
+    "Prefer concise labels and muted helper text",
+    "Make dark mode truly dark rather than gray-washed"
+  ],
+  "donts": [
+    "Do not add gradient-heavy hero visuals",
+    "Do not use glossy 3D icons",
+    "Do not overuse shadows or thick borders",
+    "Do not mix many icon families",
+    "Do not replicate captcha/passkey UIs or logic"
+  ]
+}

@@ -1,0 +1,248 @@
+# Auth Center
+
+Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SSO、账号管理、子应用权限、额度管理、Passkey、GitHub 登录、邮箱认证和访问统计。
+
+设计原则是：子应用只接收并校验 JWT。邮箱、密码、验证码、注册、Passkey、GitHub 绑定、会话管理和权限管理都由 Auth Center 统一处理。
+
+## 当前功能
+
+- 根路径 `/` 为落地页
+- 合并登录页 `/login`
+- 邮箱或用户名 + 密码登录
+- 邮箱验证码登录
+- 已绑定用户可使用 GitHub 登录
+- 已绑定用户可使用 Passkey 登录
+- 邮箱注册页 `/register`
+- 注册时可选 register code，用于应用对应配置
+- Cloudflare Turnstile 用于注册和高风险操作
+- 邮箱验证、重置密码、修改邮箱确认、安全提醒邮件
+- 用户中心 `/user/:uuid`
+- 管理员后台 `/dash`
+- 管理员用户、应用、注册码、权限、额度和统计管理
+- D1 登录设备记录与设备撤销
+- Analytics Engine 访问统计
+- JWT 包含 `role`、`email`、`email_verified`、`auth_provider`
+
+## 认证规则
+
+- 新接入的子应用必须使用 `jwt.role` 判断 `admin` 和 `user`。
+- 旧的 `username === "admin"` 兼容规则可以保留给历史子应用，但新子应用不应依赖它。
+- 公开注册时，`username` 和 `fullname` 不允许包含 `admin`。
+- 子应用不能直接处理邮箱、密码、验证码或注册码注册逻辑。
+
+## 主要路由
+
+- `/`：落地页。已登录时，管理员跳到 `/dash`，普通用户跳到 `/user/:uuid`。
+- `/login`：密码、验证码、Passkey、GitHub 的合并登录页。
+- `/register`：邮箱注册页，可选注册码。
+- `/verify-email`：邮箱验证提示和重发页面。
+- `/forgot-password`：发送重置密码邮件。
+- `/reset-password`：设置新密码。
+- `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。
+- `/dash`：管理员后台。
+
+## 管理员后台
+
+后台 tab：
+
+- Users
+- Applications
+- Permissions
+- Register
+- Statistics
+
+### 子应用权限与额度
+
+Permissions 页使用真实 D1 数据，来源包括 `users`、`apps`、`user_apps` 和 `auth_audit_logs`。
+
+桌面端：
+
+- 用户和应用搜索
+- role、plan、status、app group 筛选
+- 用户数、应用数、已开通、接近额度、超额汇总
+- 用户列 sticky
+- 应用表头 sticky
+- 横向矩阵滚动
+- 单元格状态：`ON`、`ON*`、`OFF`、接近额度百分比、超额、禁用
+- 点击单元格打开右侧详情抽屉
+- 批量开启、批量关闭、批量套用额度
+- 当前筛选结果 CSV 导出
+
+手机端：
+
+- 不显示完整宽矩阵
+- 显示统计首页
+- 支持按用户管理
+- 支持按应用管理
+- 支持异常额度列表
+- 支持最近 permission 操作
+- 编辑时使用全屏详情页，关闭按钮固定在顶部可见
+
+Permission API：
+
+- `GET /api/admin/permissions/matrix`
+- `GET /api/admin/permissions/detail?user_id=...&app_id=...`
+- `POST /api/admin/permissions/update`
+- `POST /api/admin/permissions/bulk-update`
+- `POST /api/admin/permissions/reset-quota`
+- `GET /api/admin/permissions/anomalies`
+- `GET /api/admin/permissions/audit-logs`
+- `GET /api/admin/permissions/export`
+
+所有 permission 管理 API 都需要管理员鉴权；JWT 管理员判断使用 `role = admin`。
+
+## 数据结构
+
+主要 D1 表：
+
+- `users`：用户账号、资料、role、状态、邮箱验证状态、认证来源、密码 hash 字段和会话配置
+- `user_credentials`：邮箱认证用户的密码凭据元数据
+- `auth_tokens`：邮箱验证、密码重置、邮箱修改、登录验证码 token
+- `auth_sessions`：邮箱认证相关的 refresh/session 记录
+- `user_sessions`：展示给用户的登录设备
+- `apps`：子应用配置
+- `user_apps`：用户与应用的访问权限、应用内角色、额度、用量和启停状态
+- `register_codes`：管理员创建的注册码和配置
+- `register_code_uses`：注册码使用记录
+- `auth_audit_logs`：安全日志和管理员操作日志
+- `email_jobs`：邮件任务队列
+- `registration_counters`：注册和邮件发送限流计数
+- `passkeys`：WebAuthn 凭据
+
+## Cloudflare 绑定
+
+需要配置：
+
+- D1 数据库：`DB`
+- Worker 静态资源：`ASSETS`
+- Analytics Engine：`ANALYTICS`
+- R2 头像桶：`AVATAR_BUCKET`
+- Workers Email / Cloudflare Email Service：`EMAIL`
+
+## 环境变量
+
+示例：
+
+```toml
+ADMIN_USERNAME = "admin"
+ADMIN_EMAIL = "admin@example.com"
+APP_NAME = "Auth Center"
+PUBLIC_BASE_URL = "https://accounts.example.com"
+JWT_ISSUER = "auth-center"
+EMAIL_FROM = "noreply@accounts.example.com"
+TURNSTILE_SITE_KEY = "0x..."
+REGISTRATION_MODE = "open"
+REGISTRATION_START_AT = ""
+REGISTRATION_END_AT = ""
+ALLOWED_EMAIL_DOMAINS = "gmail.com,outlook.com,qq.com,hotmail.com"
+BLOCKED_EMAIL_DOMAINS = "tempmail.com,10minutemail.com"
+MAX_GLOBAL_REGISTRATIONS_PER_DAY = "100"
+MAX_REGISTRATIONS_PER_IP_PER_HOUR = "3"
+MAX_REGISTRATIONS_PER_IP_PER_DAY = "5"
+MAX_VERIFY_EMAILS_PER_EMAIL_PER_DAY = "3"
+MAX_REGISTER_ATTEMPTS_PER_EMAIL_PER_HOUR = "5"
+MAX_REGISTER_ATTEMPTS_PER_IP_PER_HOUR = "10"
+ACCESS_TOKEN_TTL_SECONDS = "3600"
+REFRESH_TOKEN_TTL_SECONDS = "2592000"
+NEAR_LIMIT_THRESHOLD = "0.9"
+```
+
+Secrets：
+
+```text
+ADMIN_PASSWORD
+JWT_SECRET
+TURNSTILE_SECRET_KEY
+PASSWORD_PEPPER
+GITHUB_CLIENT_SECRET
+CF_API_TOKEN
+```
+
+## 数据库初始化和迁移
+
+新环境：
+
+```bash
+npx wrangler d1 execute auth-center-db --remote --file=./schema.sql
+```
+
+已有环境按需执行近期迁移：
+
+```bash
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-email-auth-2026-05-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-auth-settings-2026-05-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-sessions.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
+```
+
+## 邮件配置
+
+1. 在 Cloudflare 添加并验证发件域名。
+2. 配置 Cloudflare Email Service / Workers Email 要求的 DNS 记录。
+3. 在 Worker 中添加 `send_email` binding，名称为 `EMAIL`。
+4. 设置 `EMAIL_FROM` 为已验证的发件地址。
+5. 部署后测试邮箱验证、重发验证、重置密码、验证码登录和修改邮箱。
+
+邮件任务写入 `email_jobs`，并提供 HTML 模板和纯文本 fallback。
+
+## Turnstile 配置
+
+1. 创建 Cloudflare Turnstile widget。
+2. 设置 `TURNSTILE_SITE_KEY`。
+3. 设置 secret：`TURNSTILE_SECRET_KEY`。
+4. 确认注册、重发验证、发送验证码、忘记密码和修改邮箱都进行服务端校验。
+
+如果表单提交失败，前端会重置 Turnstile 状态，便于下一次重新验证。
+
+## 构建和部署
+
+```bash
+npm install
+npm run build
+npx wrangler deploy
+```
+
+## 常用验证
+
+Permission matrix：
+
+```bash
+curl -H "Authorization: Basic <base64-admin-credentials>" \
+  https://accounts.example.com/api/admin/permissions/matrix
+```
+
+退出登录应清理会话 cookie：
+
+```bash
+curl -i -X POST https://accounts.example.com/api/logout
+```
+
+邮箱或用户名登录：
+
+```bash
+curl -X POST https://accounts.example.com/api/auth/login/email \
+  -H "Content-Type: application/json" \
+  -d '{"identifier":"username-or-email","password":"password"}'
+```
+
+## 子应用 JWT 字段
+
+JWT 示例：
+
+```json
+{
+  "sub": "user_uuid",
+  "uuid": "user_uuid",
+  "username": "example",
+  "name": "Example User",
+  "email": "user@example.com",
+  "email_verified": true,
+  "role": "user",
+  "auth_provider": "email",
+  "session_id": "session_uuid"
+}
+```
+
+子应用应使用 `role` 做权限判断，使用 `sub` 或 `uuid` 作为稳定用户标识。

@@ -1,0 +1,125 @@
+{
+  "task": "Apply the extracted minimalist UI style to the user's webapp",
+  "priority": [
+    "Match layout rhythm and spacing",
+    "Match component shape language",
+    "Implement light/dark theme parity",
+    "Use restrained iconography",
+    "Preserve existing product logic unless explicitly asked to redesign flows"
+  ],
+  "hard_constraints": [
+    "Do not implement or imitate captcha, passkey, or security verification logic",
+    "Only borrow visual language from the reference recording",
+    "Keep accessibility: color contrast AA minimum, visible focus states, touch targets >= 44px",
+    "Support both mobile and desktop responsive layouts",
+    "Avoid adding decorative elements not present in the reference style"
+  ],
+  "deliverables": {
+    "required": [
+      "global design tokens",
+      "theme variables for light and dark",
+      "button/input/card/list/tabs components",
+      "settings page visual template",
+      "dashboard visual template",
+      "theme toggle component"
+    ],
+    "optional": [
+      "icon mapping",
+      "motion preset variables",
+      "Figma token export compatibility"
+    ]
+  },
+  "implementation_plan": [
+    {
+      "step": 1,
+      "name": "Set design tokens",
+      "details": [
+        "Create CSS variables or Tailwind theme extension from design_tokens.json",
+        "Use semantic tokens like --bg, --surface, --text-primary instead of hard-coded colors"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "Refactor base layout",
+      "details": [
+        "Use a narrow content column for settings/forms",
+        "Use grouped cards with 16px padding and 12-16px radius",
+        "Adopt muted borders and minimal shadows"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "Standardize controls",
+      "details": [
+        "Primary buttons: blue, 44px height, radius 12",
+        "Inputs/selects: clean outline, soft focus ring, 44px height",
+        "Rows: compact, text-left, value/meta-right"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "Add theme system",
+      "details": [
+        "Implement light and dark theme token maps",
+        "Persist theme choice in localStorage or server profile",
+        "Ensure identical spacing and structure across themes"
+      ]
+    },
+    {
+      "step": 5,
+      "name": "Icon and status polish",
+      "details": [
+        "Use one icon library only",
+        "Prefer 16-20px outline icons",
+        "Use semantic colors only for status and destructive actions"
+      ]
+    }
+  ],
+  "component_acceptance_criteria": {
+    "buttons": [
+      "primary button is visually prominent but not oversized",
+      "secondary button is neutral and bordered or subtle-filled",
+      "all buttons preserve shape across themes"
+    ],
+    "inputs": [
+      "single consistent border radius",
+      "minimal labels and helper text",
+      "clear focus and disabled states"
+    ],
+    "cards": [
+      "clean border separation",
+      "balanced whitespace",
+      "no noisy backgrounds"
+    ],
+    "theme_toggle": [
+      "works instantly without layout shift",
+      "persists user preference",
+      "has accessible name and state"
+    ]
+  },
+  "framework_adapters": {
+    "tailwind": {
+      "apply": [
+        "extend colors, borderRadius, boxShadow, spacing",
+        "create reusable class recipes via @layer components or cva"
+      ]
+    },
+    "css_variables": {
+      "apply": [
+        ":root and [data-theme='dark'] token maps",
+        "component classes reference semantic vars only"
+      ]
+    },
+    "react_vue_svelte": {
+      "apply": [
+        "build primitive components first",
+        "compose pages from primitives",
+        "keep business logic separate from style"
+      ]
+    }
+  },
+  "prompt_template_for_ai_agent": {
+    "system_style_instruction": "Use the provided design tokens and component rules exactly. Rebuild the UI in a minimalist enterprise dashboard style with rounded cards, restrained icons, a single blue primary CTA, muted borders, and full light/dark theme parity. Do not emulate captcha, passkey, or security-specific flows. Focus only on visuals, spacing, theming, component consistency, and accessibility.",
+    "task_instruction": "Transform the target webapp's existing components to match the spec. Output production-ready code, preserve current app logic, and annotate any place where the source app structure prevents exact visual parity."
+  }
+}

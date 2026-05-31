@@ -1,0 +1,59 @@
+name = "sso-analytics-worker"
+main = "src/index.ts"
+compatibility_date = "2024-03-02"
+
+routes = [
+  { pattern = "accounts.aryuki.com", custom_domain = true }
+]
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+
+[vars]
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "Mylover10"
+JWT_SECRET = "1ee9f5ea-f5e0-42d1-b434-65df7efb42c4"
+CF_ACCOUNT_ID = "3903d3554a2e7453ce23f44bc989fe6b"
+GITHUB_CLIENT_ID = "Ov23liJvxA7wU7FRkMf7"
+GITHUB_CLIENT_SECRET = "e4a2e1950bedb3be7b7d89474e5f216fef6dba6f"
+ADMIN_GITHUB_ID = "103983438"
+ADMIN_EMAIL = "yysy.rhy@gmail.com"
+APP_NAME = "Auth Center"
+PUBLIC_BASE_URL = "https://accounts.aryuki.com"
+JWT_ISSUER = "auth-center"
+EMAIL_FROM = "noreply@accounts.aryuki.com"
+TURNSTILE_SITE_KEY = "0x4AAAAAADYmJ_Cq7Uz4ybOg"
+REGISTRATION_MODE = "open"
+REGISTRATION_START_AT = ""
+REGISTRATION_END_AT = ""
+ALLOWED_EMAIL_DOMAINS = "gmail.com,outlook.com,qq.com,hotmail.com,live.com,msn.com,yahoo.com,icloud.com,me.com,proton.me,protonmail.com,163.com,126.com,yeah.net,foxmail.com"
+BLOCKED_EMAIL_DOMAINS = "tempmail.com,10minutemail.com,guerrillamail.com"
+MAX_GLOBAL_REGISTRATIONS_PER_DAY = "100"
+MAX_REGISTRATIONS_PER_IP_PER_HOUR = "3"
+MAX_REGISTRATIONS_PER_IP_PER_DAY = "5"
+MAX_VERIFY_EMAILS_PER_EMAIL_PER_DAY = "3"
+MAX_REGISTER_ATTEMPTS_PER_EMAIL_PER_HOUR = "5"
+MAX_REGISTER_ATTEMPTS_PER_IP_PER_HOUR = "10"
+ACCESS_TOKEN_TTL_SECONDS = "3600"
+REFRESH_TOKEN_TTL_SECONDS = "2592000"
+# 在 wrangler.toml 中补充您的 Cloudflare API Token
+CF_API_TOKEN = "mFfv3mKg0mAqHV7QIlxCmKbXhvF6C4gJRyj0jrnu"
+
+
+[[d1_databases]]
+binding = "DB"
+database_name = "auth-center-db"
+database_id = "e72fc2ba-ff4b-4ec9-93e2-e5e6cbc3dedf"
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "auth-center"
+
+[[r2_buckets]]
+binding = "AVATAR_BUCKET"
+bucket_name = "auth-center-save"
+preview_bucket_name = "auth-center-save"
+
+[[send_email]]
+name = "EMAIL"
