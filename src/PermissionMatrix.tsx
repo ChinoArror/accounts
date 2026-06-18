@@ -336,12 +336,12 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
         </div>
         <div className="mt-5 grid gap-3 lg:grid-cols-6">
           <label className="relative lg:col-span-2">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-tertiary)]" />
-            <input className="pl-10" placeholder="Search user or email" value={filters.user_search} onChange={(event) => setFilters({ ...filters, user_search: event.target.value })} />
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-tertiary)]" />
+            <input className="pr-10" placeholder="Search user or email" value={filters.user_search} onChange={(event) => setFilters({ ...filters, user_search: event.target.value })} />
           </label>
           <label className="relative lg:col-span-2">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-tertiary)]" />
-            <input className="pl-10" placeholder="Search app" value={filters.app_search} onChange={(event) => setFilters({ ...filters, app_search: event.target.value })} />
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-tertiary)]" />
+            <input className="pr-10" placeholder="Search app" value={filters.app_search} onChange={(event) => setFilters({ ...filters, app_search: event.target.value })} />
           </label>
           <select value={filters.role} onChange={(event) => setFilters({ ...filters, role: event.target.value })}>
             <option value="all">All roles</option>

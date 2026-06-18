@@ -1,7 +1,6 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  ArrowLeft,
   Github,
   ImagePlus,
   KeyRound,
@@ -38,16 +37,20 @@ function Notice({ children, tone = 'normal' }: { children: React.ReactNode; tone
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] p-3 backdrop-blur-sm sm:items-center sm:p-6"
+      className="fixed inset-0 z-50 flex overscroll-contain bg-[var(--overlay)] p-3 backdrop-blur-sm sm:items-center sm:justify-center sm:p-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      onTouchMove={(event) => event.stopPropagation()}
+      onWheel={(event) => event.stopPropagation()}
     >
       <motion.div
         initial={{ opacity: 0, y: 24, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 18, scale: 0.98 }}
-        className="ui-auth-card max-h-[92vh] w-full max-w-[520px] overflow-y-auto p-5 sm:p-6"
+        className="ui-auth-card mt-auto max-h-[92dvh] w-full max-w-[520px] overflow-y-auto overscroll-contain p-5 sm:mt-0 sm:p-6"
+        onTouchMove={(event) => event.stopPropagation()}
+        onWheel={(event) => event.stopPropagation()}
       >
         <div className="mb-6 flex items-center justify-between gap-4">
           <div>
@@ -161,6 +164,15 @@ export default function UserHome() {
   React.useEffect(() => {
     if (session) void loadSessions();
   }, [session, loadSessions]);
+
+  React.useEffect(() => {
+    if (!modal || typeof document === 'undefined') return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [modal]);
 
   const apiPost = async (path: string, body: Record<string, unknown>) => {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -287,9 +299,6 @@ export default function UserHome() {
       <main className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 md:py-8">
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <Link to="/" className="ui-icon-button shrink-0" aria-label="Back">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
             <div className="ui-logo-badge h-11 w-11 shrink-0">
               <Shield className="h-5 w-5" />
             </div>
@@ -460,16 +469,20 @@ export default function UserHome() {
               {sessions.length === 0 ? (
                 <div className="ui-card-subtle p-4 text-sm text-[var(--text-secondary)]">No sessions.</div>
               ) : sessions.map((item) => (
-                <div key={item.id} className="ui-card-subtle p-4">
+                <div key={item.id} className="ui-card-subtle min-w-0 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
                       <p className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                         <MonitorSmartphone className="h-4 w-4 text-[var(--primary)]" /> {item.id === currentSessionId ? 'Current device' : 'Signed-in device'}
                       </p>
-                      <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{item.user_agent || 'Unknown user agent'}</p>
-                      <p className="mt-1 text-xs text-[var(--text-tertiary)]">IP hash: {item.ip_hash || 'N/A'} - {formatDateTime(item.created_at)}</p>
+                      <p className="mt-1 break-words text-xs text-[var(--text-secondary)] [overflow-wrap:anywhere]">{item.user_agent || 'Unknown user agent'}</p>
+                      <div className="mt-2 grid min-w-0 gap-1 text-xs text-[var(--text-tertiary)]">
+                        <p className="min-w-0 break-all [overflow-wrap:anywhere]">IP hash: {item.ip_hash || 'N/A'}</p>
+                        <p className="min-w-0 break-all [overflow-wrap:anywhere]">App ID: {item.app_id || 'auth-center'}</p>
+                        <p>{formatDateTime(item.created_at)}</p>
+                      </div>
                     </div>
-                    <button type="button" className="ui-button-secondary" onClick={() => revokeSession(item.id)} disabled={!!item.revoked_at}>
+                    <button type="button" className="ui-button-secondary shrink-0" onClick={() => revokeSession(item.id)} disabled={!!item.revoked_at}>
                       Sign out
                     </button>
                   </div>

@@ -128,17 +128,17 @@ export default function SessionCenter() {
                           <Clock3 className="h-4 w-4 text-[var(--primary)]" />
                           <span>Login time: {formatDateTime(item.login_at)}</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <MapPin className="h-4 w-4 text-[var(--primary)]" />
-                          <span>IP: {item.ip_address || 'Unknown'}</span>
+                        <div className="flex min-w-0 items-start gap-2">
+                          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--primary)]" />
+                          <span className="min-w-0 break-all [overflow-wrap:anywhere]">IP: {item.ip_address || 'Unknown'}</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <MonitorSmartphone className="h-4 w-4 text-[var(--primary)]" />
+                        <div className="flex min-w-0 items-center gap-2">
+                          <MonitorSmartphone className="h-4 w-4 shrink-0 text-[var(--primary)]" />
                           <span>Device: {getDeviceLabel(item.device_type)}</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <ShieldCheck className="h-4 w-4 text-[var(--primary)]" />
-                          <span>App: {item.app_id || 'Account center'}</span>
+                        <div className="flex min-w-0 items-start gap-2">
+                          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--primary)]" />
+                          <span className="min-w-0 break-all [overflow-wrap:anywhere]">App ID: {item.app_id || 'auth-center'}</span>
                         </div>
                         <div className="flex items-center gap-2 md:col-span-2">
                           <LaptopMinimal className="h-4 w-4 text-[var(--primary)]" />

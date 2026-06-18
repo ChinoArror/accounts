@@ -38,7 +38,7 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - `/verify-email`：邮箱验证提示和重发页面。
 - `/forgot-password`：发送重置密码邮件。
 - `/reset-password`：设置新密码。
-- `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。
+- `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。登录设备会显示发起登录的 `app_id`，直接在 Auth Center 中发起的登录记为 `auth-center`。
 - `/dash`：管理员后台。
 
 ## 管理员后台
@@ -99,7 +99,7 @@ Permission API：
 - `user_credentials`：邮箱认证用户的密码凭据元数据
 - `auth_tokens`：邮箱验证、密码重置、邮箱修改、登录验证码 token
 - `auth_sessions`：邮箱认证相关的 refresh/session 记录
-- `user_sessions`：展示给用户的登录设备
+- `user_sessions`：展示给用户的登录设备，包含发起登录的 `app_id`
 - `apps`：子应用配置
 - `user_apps`：用户与应用的访问权限、应用内角色、额度、用量和启停状态
 - `register_codes`：管理员创建的注册码和配置
@@ -240,9 +240,12 @@ JWT 示例：
   "email": "user@example.com",
   "email_verified": true,
   "role": "user",
+  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid",
   "auth_provider": "email",
   "session_id": "session_uuid"
 }
 ```
 
-子应用应使用 `role` 做权限判断，使用 `sub` 或 `uuid` 作为稳定用户标识。
+子应用应使用 `role` 做权限判断，使用 `sub` 或 `uuid` 作为稳定用户标识。所有属于用户的资产、业务数据、额度记录、审计日志和统计记录，都必须使用 Auth Center 的 `uuid` 关联。`name`、`username`、`fullname`、`email` 等字段只用于页面展示和用户识别，不得作为数据归属键，避免删除账号后，新出现的同名账号错误对应原有记录。
+
+当用户设置了头像时，`avatar_url` 会以完整 URL 下发给子应用，子应用可以直接渲染；但头像展示旁边的名称仍只是显示信息，数据归属继续以 `uuid` 为准。

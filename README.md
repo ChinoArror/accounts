@@ -38,7 +38,7 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - `/verify-email`: verification notice and resend page.
 - `/forgot-password`: password reset request.
 - `/reset-password`: password reset form.
-- `/user/:uuid`: user account center, profile, email change, password change, register-code update, and login devices.
+- `/user/:uuid`: user account center, profile, email change, password change, register-code update, and login devices. Login device rows show the initiating `app_id`; direct Auth Center activity is recorded as `auth-center`.
 - `/dash`: admin dashboard.
 
 ## Admin Dashboard
@@ -98,7 +98,7 @@ Main D1 tables:
 - `user_credentials`: password credential metadata for email-auth accounts
 - `auth_tokens`: hashed email verification, password reset, email change, and OTP tokens
 - `auth_sessions`: refresh/session records for email-auth flows
-- `user_sessions`: browser login devices shown to users
+- `user_sessions`: browser login devices shown to users, including the initiating `app_id`
 - `apps`: registered child apps
 - `user_apps`: user-app access, app role, quotas, usage counters, and permission state
 - `register_codes`: admin-created register codes and their configuration
@@ -239,9 +239,12 @@ JWTs include:
   "email": "user@example.com",
   "email_verified": true,
   "role": "user",
+  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid",
   "auth_provider": "email",
   "session_id": "session_uuid"
 }
 ```
 
-Subapps should use `role` for authorization and `sub`/`uuid` as the stable user identifier.
+Subapps should use `role` for authorization and `sub`/`uuid` as the stable user identifier. All user-owned assets, app data, quota records, audit logs, and analytics records must be keyed by the Auth Center `uuid`. Display fields such as `name`, `username`, `fullname`, and `email` are only for UI convenience and must not be used to join or own records; otherwise a deleted account and a later account with the same visible name could be linked incorrectly.
+
+`avatar_url` is a complete URL when the user has an avatar. Subapps can render it directly, and should keep using `uuid` as the ownership key even when showing the avatar next to a display name.

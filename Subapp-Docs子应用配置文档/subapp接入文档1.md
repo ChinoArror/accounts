@@ -114,11 +114,13 @@ Sub-apps should redirect users to a centralized login page (or handle it via API
 }
 ```
 
-The JWT payload also contains: `{ uuid, user_id, name, username, email, email_verified, role, status, avatar_url?, exp }`. The `name` and `username` fields are both included so sub-apps can display the user's display name.
+The JWT payload also contains: `{ sub, uuid, user_id, name, username, email, email_verified, role, status, avatar_url?, exp }`. The `name` and `username` fields are both included so sub-apps can display the user's display name.
 
 Legacy compatibility: existing sub-apps may still treat `name === "admin"` as an administrator. New sub-apps should not depend on that legacy rule; use `role === "admin"` for admin checks and `role === "user"` for normal users. Auth Center registration rejects `username` and `fullname` values containing `admin` in any letter case to avoid misleading legacy checks.
 
-`avatar_url` is optional. If the user has uploaded an avatar, the Auth Center can include a URL that points back to the centralized avatar endpoint. Sub-apps may choose whether to consume and render that field.
+`avatar_url` is optional. If the user has uploaded an avatar, Auth Center includes a complete URL that points back to the centralized avatar endpoint. Sub-apps may render that field directly.
+
+Important identity rule: all user-owned assets, business data, quota records, audit logs, and analytics rows must be keyed by Auth Center `uuid` / JWT `sub`. Display fields such as `name`, `username`, `fullname`, and `email` are only for UI convenience. Do not use them as ownership keys, because a deleted account and a later account with the same visible name must not inherit each other's records.
 
 ### Token Verification
 

@@ -35,6 +35,11 @@ function getPublicBaseUrl(c: Ctx) {
   return envString(c, 'PUBLIC_BASE_URL') || new URL(c.req.url).origin;
 }
 
+function buildAvatarUrl(c: Ctx, uuid?: string | null, avatarKey?: string | null, legacyAvatarData?: string | null) {
+  if (!uuid || (!avatarKey && !legacyAvatarData)) return null;
+  return `${getPublicBaseUrl(c)}/api/avatar/${encodeURIComponent(uuid)}`;
+}
+
 function getClientIp(c: Ctx) {
   return c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() || '0.0.0.0';
 }
@@ -509,6 +514,7 @@ async function createSessionAndJwt(c: Ctx, user: any, appId = 'auth-center') {
     role: user.role || 'user',
     status: user.status || 'active',
     auth_provider: user.auth_provider || 'email',
+    avatar_url: buildAvatarUrl(c, user.uuid || user.id, user.avatar_key, user.avatar_data),
     session_id: sessionId,
     iat: Math.floor(Date.now() / 1000),
   }, c.env.JWT_SECRET, accessTtl / 86400);
@@ -1060,10 +1066,18 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const active = await requireAuth(c);
     if (!active) return c.json({ error: 'Authentication required' }, 401);
     const { results } = await c.env.DB.prepare(`
-      SELECT id, user_agent, ip_hash, created_at, expires_at, revoked_at
-      FROM auth_sessions
-      WHERE user_id = ?
-      ORDER BY created_at DESC
+      SELECT
+        s.id,
+        s.user_agent,
+        s.ip_hash,
+        s.created_at,
+        s.expires_at,
+        s.revoked_at,
+        COALESCE(us.app_id, 'auth-center') AS app_id
+      FROM auth_sessions s
+      LEFT JOIN user_sessions us ON us.session_id = s.id AND us.uuid = s.user_id
+      WHERE s.user_id = ?
+      ORDER BY s.created_at DESC
       LIMIT 100
     `).bind(active.user.uuid || active.user.id).all();
     return c.json({ ok: true, current_session_id: active.payload.session_id || null, sessions: results || [] });
