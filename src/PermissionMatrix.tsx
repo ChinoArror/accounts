@@ -246,6 +246,63 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
     setFilters({ user_search: '', app_search: '', role: 'all', plan: 'all', status: 'all', app_group: 'all' });
   };
 
+  const toggleUserSelection = (userId: string, checked: boolean) => {
+    setSelectedUsers((current) => ({ ...current, [userId]: checked }));
+  };
+
+  const toggleAppSelection = (appId: string, checked: boolean) => {
+    setSelectedApps((current) => ({ ...current, [appId]: checked }));
+  };
+
+  const setVisibleUsersSelected = (checked: boolean) => {
+    const next: Record<string, boolean> = checked ? { ...selectedUsers } : {};
+    users.forEach((user: any) => {
+      next[user.uuid] = checked;
+    });
+    setSelectedUsers(next);
+  };
+
+  const setVisibleAppsSelected = (checked: boolean) => {
+    const next: Record<string, boolean> = checked ? { ...selectedApps } : {};
+    apps.forEach((app: any) => {
+      next[app.app_id] = checked;
+    });
+    setSelectedApps(next);
+  };
+
+  const clearSelection = () => {
+    setSelectedUsers({});
+    setSelectedApps({});
+  };
+
+  const renderMobileSelectionPanel = () => (
+    <div className="sticky top-3 z-20 mb-4 rounded-[16px] border border-[var(--border)] bg-[var(--surface)]/95 p-3 shadow-lg backdrop-blur md:hidden">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-tertiary)]">Bulk selection</p>
+          <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">{selectedUserIds.length} users / {selectedAppIds.length} apps</p>
+          <p className="text-xs text-[var(--text-secondary)]">{selectedCount} relations selected</p>
+        </div>
+        <button type="button" className="ui-button-secondary shrink-0 px-3 py-2 text-xs" onClick={clearSelection} disabled={!selectedUserIds.length && !selectedAppIds.length}>
+          Clear
+        </button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button type="button" className="ui-button-secondary px-3 py-2 text-xs" onClick={() => setVisibleUsersSelected(!users.every((user: any) => selectedUsers[user.uuid]))}>
+          {users.length > 0 && users.every((user: any) => selectedUsers[user.uuid]) ? 'Unselect users' : 'Select users'}
+        </button>
+        <button type="button" className="ui-button-secondary px-3 py-2 text-xs" onClick={() => setVisibleAppsSelected(!apps.every((app: any) => selectedApps[app.app_id]))}>
+          {apps.length > 0 && apps.every((app: any) => selectedApps[app.app_id]) ? 'Unselect apps' : 'Select apps'}
+        </button>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <button type="button" className="ui-button-primary px-2 py-2 text-xs" onClick={() => bulkUpdate('enable')} disabled={!selectedCount || loading}>Enable</button>
+        <button type="button" className="ui-button-secondary px-2 py-2 text-xs" onClick={() => bulkUpdate('disable')} disabled={!selectedCount || loading}>Close</button>
+        <button type="button" className="ui-button-secondary px-2 py-2 text-xs" onClick={() => bulkUpdate('apply_quota')} disabled={!selectedCount || loading}>Quota</button>
+      </div>
+    </div>
+  );
+
   const renderStats = () => (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
       {[
@@ -464,14 +521,26 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
           <button type="button" className="ui-button-secondary mb-4" onClick={() => setMobileMode('home')}>Back</button>
         )}
 
+        {['users', 'apps'].includes(mobileMode) ? renderMobileSelectionPanel() : null}
+
         {mobileMode === 'users' ? (
           <div className="space-y-3">
             {users.map((user: any) => {
               const row = rows.find((item: any) => item.user_id === user.uuid);
               const enabled = row?.cells.filter((cell: PermissionCell) => cell.enabled).length || 0;
               const exceeded = row?.cells.filter((cell: PermissionCell) => cell.status === 'exceeded').length || 0;
+              const userSelected = !!selectedUsers[user.uuid];
               return (
-                <div key={user.uuid} className="ui-card p-4">
+                <div key={user.uuid} className={`ui-card p-4 ${userSelected ? 'ring-2 ring-[var(--primary)]/40' : ''}`}>
+                  <label className="mb-3 flex items-center gap-3 rounded-[12px] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="h-5 w-5 shrink-0"
+                      checked={userSelected}
+                      onChange={(event) => toggleUserSelection(user.uuid, event.target.checked)}
+                    />
+                    Select this user
+                  </label>
                   <p className="font-semibold text-[var(--text-primary)]">{user.username}</p>
                   <p className="mt-1 break-all text-sm text-[var(--text-secondary)]">{user.email || user.name}</p>
                   <p className="mt-2 text-xs text-[var(--text-secondary)]">role: {user.role} · plan: {user.plan}</p>
@@ -479,14 +548,27 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
                   <div className="mt-3 grid gap-2">
                     {row?.cells.map((cell: PermissionCell) => {
                       const app = apps.find((item: any) => item.app_id === cell.app_id);
+                      const appSelected = !!selectedApps[cell.app_id];
+                      const relationSelected = userSelected && appSelected;
                       return (
-                        <button key={cell.app_id} className="ui-card-subtle flex items-center justify-between gap-3 p-3 text-left" onClick={() => openDetail(cell.user_id, cell.app_id)}>
-                          <span>
-                            <span className="block font-semibold text-[var(--text-primary)]">{app?.app_name}</span>
-                            <span className="text-xs text-[var(--text-secondary)]">{cell.has_override ? 'Override' : cell.quota_source}</span>
-                          </span>
-                          <CellBadge cell={cell} />
-                        </button>
+                        <div key={cell.app_id} className={`ui-card-subtle flex items-center justify-between gap-3 p-3 ${relationSelected ? 'border-[var(--primary)] bg-[var(--surface)]' : ''}`}>
+                          <label className="flex min-w-0 flex-1 items-center gap-3">
+                            <input
+                              type="checkbox"
+                              className="h-5 w-5 shrink-0"
+                              checked={appSelected}
+                              onChange={(event) => toggleAppSelection(cell.app_id, event.target.checked)}
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold text-[var(--text-primary)]">{app?.app_name}</span>
+                              <span className="text-xs text-[var(--text-secondary)]">{cell.has_override ? 'Override' : cell.quota_source}</span>
+                            </span>
+                          </label>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <CellBadge cell={cell} />
+                            <button type="button" className="ui-button-secondary px-3 py-2 text-xs" onClick={() => openDetail(cell.user_id, cell.app_id)}>Detail</button>
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
@@ -500,19 +582,45 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
           <div className="space-y-3">
             {apps.map((app: any) => {
               const cells = rows.flatMap((row: any) => row.cells).filter((cell: PermissionCell) => cell.app_id === app.app_id);
+              const appSelected = !!selectedApps[app.app_id];
               return (
-                <div key={app.app_id} className="ui-card p-4">
+                <div key={app.app_id} className={`ui-card p-4 ${appSelected ? 'ring-2 ring-[var(--primary)]/40' : ''}`}>
+                  <label className="mb-3 flex items-center gap-3 rounded-[12px] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="h-5 w-5 shrink-0"
+                      checked={appSelected}
+                      onChange={(event) => toggleAppSelection(app.app_id, event.target.checked)}
+                    />
+                    Select this app
+                  </label>
                   <p className="font-semibold text-[var(--text-primary)]">{app.app_name}</p>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">{app.app_id} · {app.app_group}</p>
                   <p className="mt-2 text-xs text-[var(--text-secondary)]">Enabled {cells.filter((cell: PermissionCell) => cell.enabled).length} / {users.length} · Near {cells.filter((cell: PermissionCell) => cell.status === 'near_limit').length} · Exceeded {cells.filter((cell: PermissionCell) => cell.status === 'exceeded').length}</p>
                   <div className="mt-3 grid gap-2">
                     {cells.map((cell: PermissionCell) => {
                       const user = users.find((item: any) => item.uuid === cell.user_id);
+                      const userSelected = !!selectedUsers[cell.user_id];
+                      const relationSelected = userSelected && appSelected;
                       return (
-                        <button key={`${cell.user_id}-${app.app_id}`} className="ui-card-subtle flex items-center justify-between gap-3 p-3 text-left" onClick={() => openDetail(cell.user_id, cell.app_id)}>
-                          <span className="font-semibold text-[var(--text-primary)]">{user?.username}</span>
-                          <CellBadge cell={cell} />
-                        </button>
+                        <div key={`${cell.user_id}-${app.app_id}`} className={`ui-card-subtle flex items-center justify-between gap-3 p-3 ${relationSelected ? 'border-[var(--primary)] bg-[var(--surface)]' : ''}`}>
+                          <label className="flex min-w-0 flex-1 items-center gap-3">
+                            <input
+                              type="checkbox"
+                              className="h-5 w-5 shrink-0"
+                              checked={userSelected}
+                              onChange={(event) => toggleUserSelection(cell.user_id, event.target.checked)}
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold text-[var(--text-primary)]">{user?.username}</span>
+                              <span className="text-xs text-[var(--text-secondary)]">{user?.email || user?.name || cell.user_id}</span>
+                            </span>
+                          </label>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <CellBadge cell={cell} />
+                            <button type="button" className="ui-button-secondary px-3 py-2 text-xs" onClick={() => openDetail(cell.user_id, cell.app_id)}>Detail</button>
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
