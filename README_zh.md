@@ -175,7 +175,20 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-sessions.s
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
 ```
+
+## 头像编辑
+
+用户可在 `/user/:uuid` 的 Edit Info 悬浮窗口中修改头像。
+
+- Upload 会打开头像调整窗口，预览框与账号页头像框保持同等比例的方形圆角效果。
+- 可调整大小、横向位置和纵向位置，确认后再保存。
+- Save 后会在 R2 中保存两份图片：原图保存到 `Avatar/<uuid>/original/`，裁切后的显示图保存到 `Avatar/<uuid>/cropped/`。
+- JWT 和 API 返回的 `avatar_url` 始终指向裁切后的显示图。
+- 下次修改头像时优先基于原图重新调整；旧头像没有原图时，会按已裁切头像处理。
+- Delete 后再 Save，会恢复为根据 name 生成的默认头像。
+- 删除后，在同一个已打开的账号界面内 30 分钟内可 Restore；超过 30 分钟后，Worker cron 会自动清理 R2 中等待删除的图片。
 
 ## 邮件配置
 

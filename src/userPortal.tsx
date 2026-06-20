@@ -16,6 +16,9 @@ export type ActiveUserSession = {
   auth_provider?: string;
   birthday?: string | null;
   avatar_url?: string | null;
+  avatar_original_url?: string | null;
+  avatar_delete_deadline?: string | null;
+  avatar_restore_token?: string | null;
   exp: number;
   session?: {
     session_id: string;

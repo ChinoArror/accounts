@@ -32,6 +32,11 @@ CREATE TABLE users (
     birthday TEXT,
     avatar_data TEXT,
     avatar_key TEXT,
+    avatar_original_key TEXT,
+    avatar_pending_delete_key TEXT,
+    avatar_original_pending_delete_key TEXT,
+    avatar_delete_deadline TEXT,
+    avatar_restore_token TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login_at TEXT

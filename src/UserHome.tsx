@@ -18,7 +18,15 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ThemeToggle, useThemeMode } from './theme';
 import { API_BASE, formatDateTime, useRequiredUserSession } from './userPortal';
 
-type ModalKind = 'profile' | 'email' | 'password' | 'code' | 'sessions' | null;
+type ModalKind = 'profile' | 'avatarCrop' | 'email' | 'password' | 'code' | 'sessions' | null;
+
+type AvatarEditorState = {
+  sourceUrl: string;
+  sourceData: string;
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -74,6 +82,43 @@ function readFileAsDataUrl(file: File) {
     reader.onerror = () => reject(new Error('Unable to read image file'));
     reader.readAsDataURL(file);
   });
+}
+
+async function imageUrlToDataUrl(url: string) {
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) throw new Error('Unable to load avatar');
+  const blob = await res.blob();
+  return readFileAsDataUrl(new File([blob], 'avatar', { type: blob.type || 'image/png' }));
+}
+
+function loadImage(source: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to read avatar image'));
+    image.src = source;
+  });
+}
+
+async function cropAvatarToDataUrl(editor: AvatarEditorState) {
+  const image = await loadImage(editor.sourceData || editor.sourceUrl);
+  const canvas = document.createElement('canvas');
+  const size = 512;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Unable to crop avatar');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.clearRect(0, 0, size, size);
+  const previewSize = 240;
+  const baseScale = Math.max(size / image.naturalWidth, size / image.naturalHeight) * editor.scale;
+  const width = image.naturalWidth * baseScale;
+  const height = image.naturalHeight * baseScale;
+  const x = (size - width) / 2 + editor.offsetX * (size / previewSize);
+  const y = (size - height) / 2 + editor.offsetY * (size / previewSize);
+  ctx.drawImage(image, x, y, width, height);
+  return canvas.toDataURL('image/png', 0.95);
 }
 
 function TurnstileBox({ siteKey, onToken, resetSignal = 0 }: { siteKey?: string; onToken: (token: string) => void; resetSignal?: number }) {
@@ -134,7 +179,17 @@ export default function UserHome() {
   const [rules, setRules] = React.useState<any>(null);
   const [sessions, setSessions] = React.useState<any[]>([]);
   const [currentSessionId, setCurrentSessionId] = React.useState('');
-  const [profileForm, setProfileForm] = React.useState({ name: '', birthday: '', avatar_data: undefined as string | undefined });
+  const [profileForm, setProfileForm] = React.useState({
+    name: '',
+    birthday: '',
+    avatar_data: undefined as string | undefined,
+    avatar_original_data: undefined as string | undefined,
+    avatar_cropped_data: undefined as string | undefined,
+    avatar_delete: false,
+  });
+  const [avatarEditor, setAvatarEditor] = React.useState<AvatarEditorState | null>(null);
+  const [avatarPreview, setAvatarPreview] = React.useState('');
+  const [avatarRestore, setAvatarRestore] = React.useState<{ token: string; deadline: string } | null>(null);
   const [emailForm, setEmailForm] = React.useState({ new_email: '', password: '', turnstile: '' });
   const [emailTurnstileReset, setEmailTurnstileReset] = React.useState(0);
   const [passwordForm, setPasswordForm] = React.useState({ newPassword: '', confirm: '' });
@@ -150,7 +205,16 @@ export default function UserHome() {
 
   React.useEffect(() => {
     if (!session) return;
-    setProfileForm({ name: session.name || session.username, birthday: session.birthday || '', avatar_data: undefined });
+    setProfileForm({
+      name: session.name || session.username,
+      birthday: session.birthday || '',
+      avatar_data: undefined,
+      avatar_original_data: undefined,
+      avatar_cropped_data: undefined,
+      avatar_delete: false,
+    });
+    setAvatarPreview(session.avatar_url || '');
+    setAvatarRestore(session.avatar_restore_token && session.avatar_delete_deadline ? { token: session.avatar_restore_token, deadline: session.avatar_delete_deadline } : null);
   }, [session]);
 
   const loadSessions = React.useCallback(async () => {
@@ -199,11 +263,23 @@ export default function UserHome() {
           name: profileForm.name,
           birthday: profileForm.birthday || null,
           avatar_data: profileForm.avatar_data,
+          avatar_original_data: profileForm.avatar_original_data,
+          avatar_cropped_data: profileForm.avatar_cropped_data,
+          avatar_delete: profileForm.avatar_delete,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Unable to update profile');
       setSession((current) => current ? { ...current, ...data.user } : current);
+      setAvatarPreview(data.user?.avatar_url || '');
+      setAvatarRestore(data.user?.avatar_restore_token && data.user?.avatar_delete_deadline ? { token: data.user.avatar_restore_token, deadline: data.user.avatar_delete_deadline } : null);
+      setProfileForm((current) => ({
+        ...current,
+        avatar_data: undefined,
+        avatar_original_data: undefined,
+        avatar_cropped_data: undefined,
+        avatar_delete: false,
+      }));
       setMessage('Profile updated.');
       setModal(null);
     } catch (error: any) {
@@ -263,6 +339,69 @@ export default function UserHome() {
       setMessage(data.message || 'Register code applied.');
       setRegisterCode('');
       setModal(null);
+    } catch (error: any) {
+      setMessage(error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openAvatarEditor = async (source?: string) => {
+    if (!source) return;
+    setMessage('');
+    try {
+      const sourceData = source.startsWith('data:image/') ? source : await imageUrlToDataUrl(source);
+      setAvatarEditor({ sourceUrl: sourceData, sourceData, scale: 1, offsetX: 0, offsetY: 0 });
+      setModal('avatarCrop');
+    } catch (error: any) {
+      setMessage(error.message || 'Unable to open avatar editor.');
+    }
+  };
+
+  const saveAvatarCrop = async () => {
+    if (!avatarEditor) return;
+    setSaving(true);
+    setMessage('');
+    try {
+      const cropped = await cropAvatarToDataUrl(avatarEditor);
+      setProfileForm((current) => ({
+        ...current,
+        avatar_original_data: avatarEditor.sourceData,
+        avatar_cropped_data: cropped,
+        avatar_delete: false,
+      }));
+      setAvatarPreview(cropped);
+      setAvatarRestore(null);
+      setModal('profile');
+    } catch (error: any) {
+      setMessage(error.message || 'Unable to crop avatar.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const markAvatarDeleted = () => {
+    setProfileForm((current) => ({
+      ...current,
+      avatar_data: undefined,
+      avatar_original_data: undefined,
+      avatar_cropped_data: undefined,
+      avatar_delete: true,
+    }));
+    setAvatarPreview('');
+  };
+
+  const restoreAvatar = async () => {
+    if (!avatarRestore?.token) return;
+    setSaving(true);
+    setMessage('');
+    try {
+      const data = await apiPost('/api/user/avatar/restore', { restore_token: avatarRestore.token });
+      setSession((current) => current ? { ...current, ...data.user } : current);
+      setAvatarPreview(data.user?.avatar_url || '');
+      setAvatarRestore(null);
+      setProfileForm((current) => ({ ...current, avatar_delete: false }));
+      setMessage('Avatar restored.');
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -409,17 +548,79 @@ export default function UserHome() {
                 <input type="date" value={profileForm.birthday} onChange={(event) => setProfileForm({ ...profileForm, birthday: event.target.value })} />
               </Field>
               <Field label="Avatar">
-                <label className="ui-card-subtle flex cursor-pointer items-center justify-center gap-2 px-4 py-4 text-sm font-semibold text-[var(--text-secondary)] hover:border-[var(--primary)]">
-                  <ImagePlus className="h-4 w-4" /> Upload avatar
-                  <input className="hidden" type="file" accept="image/*" onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setProfileForm({ ...profileForm, avatar_data: await readFileAsDataUrl(file) });
-                  }} />
-                </label>
+                <div className="space-y-3">
+                  <div className="ui-card-subtle flex items-center gap-4 p-4">
+                    {avatarPreview ? (
+                      <img src={avatarPreview} alt="Current avatar" className="h-16 w-16 shrink-0 rounded-[16px] object-cover shadow-md" />
+                    ) : (
+                      <div className="ui-logo-badge h-16 w-16 shrink-0 rounded-[16px] text-xl font-bold">
+                        {(profileForm.name || session.username || '?')[0].toUpperCase()}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">{avatarPreview ? 'Custom avatar' : 'Name avatar'}</p>
+                      {avatarRestore ? <p className="mt-1 text-xs text-[var(--text-secondary)]">Restore available until {formatDateTime(avatarRestore.deadline)}</p> : null}
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="ui-button-secondary flex cursor-pointer items-center justify-center gap-2">
+                      <ImagePlus className="h-4 w-4" /> Upload
+                      <input className="hidden" type="file" accept="image/*" onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const dataUrl = await readFileAsDataUrl(file);
+                        await openAvatarEditor(dataUrl);
+                      }} />
+                    </label>
+                    <button type="button" className="ui-button-secondary" onClick={() => openAvatarEditor(session.avatar_original_url || session.avatar_url || avatarPreview)} disabled={!avatarPreview && !session.avatar_url}>
+                      Adjust
+                    </button>
+                    <button type="button" className="ui-button-secondary" onClick={markAvatarDeleted} disabled={!avatarPreview && !session.avatar_url}>
+                      Delete
+                    </button>
+                    <button type="button" className="ui-button-secondary" onClick={restoreAvatar} disabled={!avatarRestore || saving}>
+                      Restore
+                    </button>
+                  </div>
+                </div>
               </Field>
               <button className="ui-button-primary w-full" disabled={saving}>{saving ? 'Saving...' : 'Save Info'}</button>
             </form>
+          </Modal>
+        ) : null}
+
+        {modal === 'avatarCrop' && avatarEditor ? (
+          <Modal title="Adjust Avatar" onClose={() => setModal('profile')}>
+            <div className="space-y-5">
+              <div className="flex justify-center">
+                <div className="rounded-[24px] bg-[var(--surface-alt)] p-5 shadow-inner">
+                  <div className="relative h-[240px] w-[240px] overflow-hidden rounded-[20px] bg-[var(--surface)] shadow-[0_0_0_999px_rgba(15,23,42,0.20)] ring-2 ring-[var(--primary)]/40">
+                    <img
+                      src={avatarEditor.sourceUrl}
+                      alt="Avatar crop preview"
+                      className="h-full w-full object-cover"
+                      style={{
+                        transform: `translate(${avatarEditor.offsetX}px, ${avatarEditor.offsetY}px) scale(${avatarEditor.scale})`,
+                        transformOrigin: 'center',
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <Field label="Size">
+                <input type="range" min="1" max="3" step="0.01" value={avatarEditor.scale} onChange={(event) => setAvatarEditor({ ...avatarEditor, scale: Number(event.target.value) })} />
+              </Field>
+              <Field label="Horizontal">
+                <input type="range" min="-120" max="120" step="1" value={avatarEditor.offsetX} onChange={(event) => setAvatarEditor({ ...avatarEditor, offsetX: Number(event.target.value) })} />
+              </Field>
+              <Field label="Vertical">
+                <input type="range" min="-120" max="120" step="1" value={avatarEditor.offsetY} onChange={(event) => setAvatarEditor({ ...avatarEditor, offsetY: Number(event.target.value) })} />
+              </Field>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button type="button" className="ui-button-secondary" onClick={() => setModal('profile')}>Cancel</button>
+                <button type="button" className="ui-button-primary" onClick={saveAvatarCrop} disabled={saving}>{saving ? 'Saving...' : 'Save Crop'}</button>
+              </div>
+            </div>
           </Modal>
         ) : null}
 

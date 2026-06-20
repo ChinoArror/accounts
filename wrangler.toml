@@ -10,6 +10,9 @@ routes = [
 directory = "dist"
 binding = "ASSETS"
 
+[triggers]
+crons = ["*/15 * * * *"]
+
 [vars]
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Mylover10"

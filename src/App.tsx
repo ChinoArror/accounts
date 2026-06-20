@@ -694,10 +694,10 @@ function Dashboard() {
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
-              className="ui-card-subtle mt-5 p-4"
+              className="ui-card-subtle mt-5 flex items-center justify-between gap-3 p-4 md:block"
             >
-              <p className="text-xs text-[var(--text-tertiary)] font-semibold uppercase tracking-[0.18em] mb-2">Signed in</p>
-              <p className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-300 to-blue-300">
+              <p className="mb-0 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)] md:mb-2">Signed in</p>
+              <p className="truncate bg-gradient-to-r from-purple-300 to-blue-300 bg-clip-text text-sm font-bold text-transparent md:text-lg">
                 Hi, {adminName} 👋
               </p>
             </motion.div>

@@ -415,9 +415,9 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
             <option value="all">All app groups</option>
             {filtersMeta.app_groups.map((group: string) => <option key={group} value={group}>{group}</option>)}
           </select>
-          <button type="button" className="ui-button-secondary" onClick={() => bulkUpdate('enable')}>Batch enable</button>
-          <button type="button" className="ui-button-secondary" onClick={() => bulkUpdate('disable')}>Batch close</button>
-          <button type="button" className="ui-button-secondary" onClick={() => bulkUpdate('apply_quota')}>Batch quota</button>
+          <button type="button" className="ui-button-secondary hidden md:inline-flex md:items-center md:justify-center" onClick={() => bulkUpdate('enable')}>Batch enable</button>
+          <button type="button" className="ui-button-secondary hidden md:inline-flex md:items-center md:justify-center" onClick={() => bulkUpdate('disable')}>Batch close</button>
+          <button type="button" className="ui-button-secondary hidden md:inline-flex md:items-center md:justify-center" onClick={() => bulkUpdate('apply_quota')}>Batch quota</button>
           <button type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={exportCsv}>
             <Download className="h-4 w-4" /> Export
           </button>
@@ -552,7 +552,7 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
                       const relationSelected = userSelected && appSelected;
                       return (
                         <div key={cell.app_id} className={`ui-card-subtle flex items-center justify-between gap-3 p-3 ${relationSelected ? 'border-[var(--primary)] bg-[var(--surface)]' : ''}`}>
-                          <label className="flex min-w-0 flex-1 items-center gap-3">
+                          <label className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
                             <input
                               type="checkbox"
                               className="h-5 w-5 shrink-0"
@@ -611,9 +611,9 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
                               checked={userSelected}
                               onChange={(event) => toggleUserSelection(cell.user_id, event.target.checked)}
                             />
-                            <span className="min-w-0">
+                            <span className="min-w-0 flex-1 overflow-hidden">
                               <span className="block truncate font-semibold text-[var(--text-primary)]">{user?.username}</span>
-                              <span className="text-xs text-[var(--text-secondary)]">{user?.email || user?.name || cell.user_id}</span>
+                              <span className="block max-w-full break-all text-xs leading-relaxed text-[var(--text-secondary)] [overflow-wrap:anywhere]">{user?.email || user?.name || cell.user_id}</span>
                             </span>
                           </label>
                           <div className="flex shrink-0 items-center gap-2">

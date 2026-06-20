@@ -136,12 +136,17 @@ function normalizeLoginEmail(input: unknown) {
 }
 
 function getRequestOrigin(c: any) {
-  return new URL(c.req.url).origin;
+  return c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin;
 }
 
 function buildAvatarUrl(c: any, uuid: string, avatarKey?: string | null, legacyAvatarData?: string | null) {
   if (!avatarKey && !legacyAvatarData) return null;
   return `${getRequestOrigin(c)}/api/avatar/${uuid}`;
+}
+
+function buildAvatarOriginalUrl(c: any, uuid: string, originalKey?: string | null, avatarKey?: string | null, legacyAvatarData?: string | null) {
+  if (!originalKey && !avatarKey && !legacyAvatarData) return null;
+  return `${getRequestOrigin(c)}/api/avatar/${uuid}/original`;
 }
 
 function getAvatarExtension(contentType: string) {
@@ -183,6 +188,47 @@ async function deleteAvatarIfPresent(c: any, avatarKey?: string | null) {
   await c.env.AVATAR_BUCKET.delete(avatarKey).catch(() => { });
 }
 
+async function deleteAvatarKeyWithEnv(env: any, avatarKey?: string | null) {
+  if (!avatarKey) return;
+  await env.AVATAR_BUCKET.delete(avatarKey).catch(() => { });
+}
+
+async function cleanupExpiredAvatarDeletes(env: any) {
+  if (!env?.DB || !env?.AVATAR_BUCKET) return;
+  const now = new Date().toISOString();
+  const { results } = await env.DB.prepare(`
+    SELECT uuid, avatar_pending_delete_key, avatar_original_pending_delete_key
+    FROM users
+    WHERE avatar_delete_deadline IS NOT NULL AND avatar_delete_deadline <= ?
+  `).bind(now).all();
+
+  for (const row of results || []) {
+    await deleteAvatarKeyWithEnv(env, row.avatar_pending_delete_key);
+    await deleteAvatarKeyWithEnv(env, row.avatar_original_pending_delete_key);
+    await env.DB.prepare(`
+      UPDATE users
+      SET avatar_pending_delete_key = NULL,
+          avatar_original_pending_delete_key = NULL,
+          avatar_delete_deadline = NULL,
+          avatar_restore_token = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE uuid = ?
+    `).bind(row.uuid).run();
+  }
+}
+
+async function putAvatarObject(c: any, uuid: string, kind: 'original' | 'cropped', avatarData: string) {
+  const parsed = parseAvatarDataUrl(avatarData);
+  const objectKey = `Avatar/${uuid}/${kind}/avatar-${kind}-${Date.now()}.${parsed.extension}`;
+  await c.env.AVATAR_BUCKET.put(objectKey, parsed.body, {
+    httpMetadata: {
+      contentType: parsed.contentType,
+      cacheControl: 'public, max-age=86400',
+    }
+  });
+  return objectKey;
+}
+
 async function resolveAvatarKeyUpdate(c: any, uuid: string, nextAvatarData: unknown, currentAvatarKey?: string | null) {
   if (nextAvatarData === undefined) {
     return currentAvatarKey || null;
@@ -208,6 +254,92 @@ async function resolveAvatarKeyUpdate(c: any, uuid: string, nextAvatarData: unkn
   });
   await deleteAvatarIfPresent(c, currentAvatarKey);
   return objectKey;
+}
+
+async function resolveProfileAvatarUpdate(c: any, uuid: string, body: any, currentUser: any) {
+  const croppedData = typeof body.avatar_cropped_data === 'string' ? body.avatar_cropped_data.trim() : '';
+  const originalData = typeof body.avatar_original_data === 'string' ? body.avatar_original_data.trim() : '';
+
+  if (body.avatar_delete === true) {
+    if (!currentUser.avatar_key && !currentUser.avatar_original_key && !currentUser.avatar_data) {
+      return {
+        avatarKey: null,
+        originalKey: null,
+        legacyAvatarData: null,
+        pendingKey: null,
+        pendingOriginalKey: null,
+        deleteDeadline: null,
+        restoreToken: null,
+      };
+    }
+
+    return {
+      avatarKey: null,
+      originalKey: null,
+      legacyAvatarData: null,
+      pendingKey: currentUser.avatar_key || null,
+      pendingOriginalKey: currentUser.avatar_original_key || null,
+      deleteDeadline: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      restoreToken: crypto.randomUUID() + crypto.randomUUID(),
+    };
+  }
+
+  if (croppedData) {
+    if (!croppedData.startsWith('data:image/')) {
+      throw new Error('Avatar crop must be an uploaded image');
+    }
+    if (originalData && !originalData.startsWith('data:image/')) {
+      throw new Error('Avatar original must be an uploaded image');
+    }
+
+    const nextOriginalKey = originalData
+      ? await putAvatarObject(c, uuid, 'original', originalData)
+      : currentUser.avatar_original_key || null;
+    const nextAvatarKey = await putAvatarObject(c, uuid, 'cropped', croppedData);
+
+    await deleteAvatarIfPresent(c, currentUser.avatar_key);
+    if (currentUser.avatar_original_key && currentUser.avatar_original_key !== currentUser.avatar_key) {
+      await deleteAvatarIfPresent(c, currentUser.avatar_original_key);
+    }
+    await deleteAvatarIfPresent(c, currentUser.avatar_pending_delete_key);
+    await deleteAvatarIfPresent(c, currentUser.avatar_original_pending_delete_key);
+
+    return {
+      avatarKey: nextAvatarKey,
+      originalKey: nextOriginalKey,
+      legacyAvatarData: null,
+      pendingKey: null,
+      pendingOriginalKey: null,
+      deleteDeadline: null,
+      restoreToken: null,
+    };
+  }
+
+  if (body.avatar_data !== undefined) {
+    const avatarKey = await resolveAvatarKeyUpdate(c, uuid, body.avatar_data, currentUser.avatar_key);
+    if (currentUser.avatar_original_key && currentUser.avatar_original_key !== currentUser.avatar_key) {
+      await deleteAvatarIfPresent(c, currentUser.avatar_original_key);
+    }
+    return {
+      avatarKey,
+      originalKey: null,
+      legacyAvatarData: body.avatar_data === undefined ? currentUser.avatar_data : null,
+      pendingKey: currentUser.avatar_pending_delete_key || null,
+      pendingOriginalKey: currentUser.avatar_original_pending_delete_key || null,
+      deleteDeadline: currentUser.avatar_delete_deadline || null,
+      restoreToken: currentUser.avatar_restore_token || null,
+    };
+  }
+
+  return {
+    avatarKey: currentUser.avatar_key || null,
+    originalKey: currentUser.avatar_original_key || null,
+    legacyAvatarData: currentUser.avatar_data || null,
+    pendingKey: currentUser.avatar_pending_delete_key || null,
+    pendingOriginalKey: currentUser.avatar_original_pending_delete_key || null,
+    deleteDeadline: currentUser.avatar_delete_deadline || null,
+    restoreToken: currentUser.avatar_restore_token || null,
+  };
 }
 
 function toUserSummary(c: any, user: any) {
@@ -319,7 +451,7 @@ async function authenticateCookieSession(c: any, allowAdmin = false) {
     if (!payload.session_id) return null;
 
     const user: any = await c.env.DB.prepare(
-      'SELECT uuid, id, user_id, username, name, email, email_verified, role, status, auth_provider, cookie_expiry_days, birthday, avatar_data, avatar_key FROM users WHERE uuid = ? OR id = ?'
+      'SELECT uuid, id, user_id, username, name, email, email_verified, role, status, auth_provider, cookie_expiry_days, birthday, avatar_data, avatar_key, avatar_original_key, avatar_pending_delete_key, avatar_original_pending_delete_key, avatar_delete_deadline, avatar_restore_token FROM users WHERE uuid = ? OR id = ?'
     ).bind(payload.uuid || payload.sub, payload.uuid || payload.sub).first();
 
     if (!user || !['active', 'pending'].includes(user.status)) return null;
@@ -597,9 +729,43 @@ app.get('/api/user/session', async (c) => {
     auth_provider: activeSession.user.auth_provider || 'legacy',
     birthday: activeSession.user.birthday || null,
     avatar_url: buildAvatarUrl(c, activeSession.user.uuid, activeSession.user.avatar_key, activeSession.user.avatar_data),
+    avatar_original_url: buildAvatarOriginalUrl(c, activeSession.user.uuid, activeSession.user.avatar_original_key, activeSession.user.avatar_key, activeSession.user.avatar_data),
     exp: activeSession.payload.exp,
     session: activeSession.session
   });
+});
+
+app.get('/api/avatar/:uuid/original', async (c) => {
+  const uuid = c.req.param('uuid');
+  const user: any = await c.env.DB.prepare(
+    'SELECT avatar_original_key, avatar_key, avatar_data FROM users WHERE uuid = ?'
+  ).bind(uuid).first();
+
+  if (!user) return c.json({ error: 'User not found' }, 404);
+
+  const key = user.avatar_original_key || user.avatar_key;
+  if (key) {
+    const object = await c.env.AVATAR_BUCKET.get(key);
+    if (!object) return c.json({ error: 'Avatar not found' }, 404);
+
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('etag', object.httpEtag);
+    headers.set('cache-control', headers.get('cache-control') || 'public, max-age=86400');
+    return new Response(object.body, { headers });
+  }
+
+  if (typeof user.avatar_data === 'string' && user.avatar_data.startsWith('data:image/')) {
+    const parsed = parseAvatarDataUrl(user.avatar_data);
+    return new Response(parsed.body, {
+      headers: {
+        'content-type': parsed.contentType,
+        'cache-control': 'public, max-age=86400',
+      }
+    });
+  }
+
+  return c.json({ error: 'Avatar not found' }, 404);
 });
 
 app.get('/api/avatar/:uuid', async (c) => {
@@ -666,25 +832,42 @@ app.put('/api/user/profile', async (c) => {
   const activeSession = await authenticateCookieSession(c);
   if (!activeSession) return c.json({ error: 'Authentication required' }, 401);
 
-  const { name, birthday, avatar_data } = await c.req.json();
+  const body = await c.req.json();
+  const { name, birthday } = body;
   if (!name || !String(name).trim()) {
     return c.json({ error: 'Full name is required' }, 400);
   }
 
   try {
-    const avatarKey = await resolveAvatarKeyUpdate(c, activeSession.user.uuid, avatar_data, activeSession.user.avatar_key);
+    const avatarUpdate = await resolveProfileAvatarUpdate(c, activeSession.user.uuid, body, activeSession.user);
     await c.env.DB.prepare(
-      'UPDATE users SET name = ?, birthday = ?, avatar_key = ?, avatar_data = ? WHERE uuid = ?'
+      `UPDATE users
+       SET name = ?,
+           birthday = ?,
+           avatar_key = ?,
+           avatar_original_key = ?,
+           avatar_data = ?,
+           avatar_pending_delete_key = ?,
+           avatar_original_pending_delete_key = ?,
+           avatar_delete_deadline = ?,
+           avatar_restore_token = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE uuid = ?`
     ).bind(
       String(name).trim(),
       birthday ? String(birthday).trim() : null,
-      avatarKey,
-      avatar_data === undefined ? activeSession.user.avatar_data : null,
+      avatarUpdate.avatarKey,
+      avatarUpdate.originalKey,
+      avatarUpdate.legacyAvatarData,
+      avatarUpdate.pendingKey,
+      avatarUpdate.pendingOriginalKey,
+      avatarUpdate.deleteDeadline,
+      avatarUpdate.restoreToken,
       activeSession.user.uuid
     ).run();
 
     const updatedUser: any = await c.env.DB.prepare(
-      'SELECT uuid, user_id, username, name, status, cookie_expiry_days, birthday, avatar_data, avatar_key FROM users WHERE uuid = ?'
+      'SELECT uuid, user_id, username, name, status, cookie_expiry_days, birthday, avatar_data, avatar_key, avatar_original_key, avatar_delete_deadline, avatar_restore_token FROM users WHERE uuid = ?'
     ).bind(activeSession.user.uuid).first();
 
     return c.json({
@@ -695,11 +878,60 @@ app.put('/api/user/profile', async (c) => {
         name: updatedUser.name,
         birthday: updatedUser.birthday || null,
         avatar_url: buildAvatarUrl(c, updatedUser.uuid, updatedUser.avatar_key, updatedUser.avatar_data),
+        avatar_original_url: buildAvatarOriginalUrl(c, updatedUser.uuid, updatedUser.avatar_original_key, updatedUser.avatar_key, updatedUser.avatar_data),
+        avatar_delete_deadline: updatedUser.avatar_delete_deadline || null,
+        avatar_restore_token: updatedUser.avatar_restore_token || null,
       }
     });
   } catch (e: any) {
     return c.json({ error: e.message || 'Unable to update profile' }, 400);
   }
+});
+
+app.post('/api/user/avatar/restore', async (c) => {
+  const activeSession = await authenticateCookieSession(c);
+  if (!activeSession) return c.json({ error: 'Authentication required' }, 401);
+
+  const { restore_token } = await c.req.json().catch(() => ({}));
+  const token = String(restore_token || '').trim();
+  if (!token) return c.json({ error: 'Restore token is required' }, 400);
+
+  const user: any = await c.env.DB.prepare(`
+    SELECT uuid, avatar_pending_delete_key, avatar_original_pending_delete_key, avatar_delete_deadline, avatar_restore_token
+    FROM users
+    WHERE uuid = ?
+  `).bind(activeSession.user.uuid).first();
+
+  if (!user || user.avatar_restore_token !== token || !user.avatar_delete_deadline || Date.parse(user.avatar_delete_deadline) <= Date.now()) {
+    await cleanupExpiredAvatarDeletes(c.env);
+    return c.json({ error: 'Restore window has expired' }, 400);
+  }
+
+  await c.env.DB.prepare(`
+    UPDATE users
+    SET avatar_key = ?,
+        avatar_original_key = ?,
+        avatar_pending_delete_key = NULL,
+        avatar_original_pending_delete_key = NULL,
+        avatar_delete_deadline = NULL,
+        avatar_restore_token = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE uuid = ?
+  `).bind(user.avatar_pending_delete_key, user.avatar_original_pending_delete_key, activeSession.user.uuid).run();
+
+  const updatedUser: any = await c.env.DB.prepare(
+    'SELECT uuid, avatar_data, avatar_key, avatar_original_key FROM users WHERE uuid = ?'
+  ).bind(activeSession.user.uuid).first();
+
+  return c.json({
+    success: true,
+    user: {
+      avatar_url: buildAvatarUrl(c, updatedUser.uuid, updatedUser.avatar_key, updatedUser.avatar_data),
+      avatar_original_url: buildAvatarOriginalUrl(c, updatedUser.uuid, updatedUser.avatar_original_key, updatedUser.avatar_key, updatedUser.avatar_data),
+      avatar_delete_deadline: null,
+      avatar_restore_token: null,
+    }
+  });
 });
 
 app.get('/api/user/sessions', async (c) => {
@@ -2167,4 +2399,9 @@ app.get('*', async (c) => {
   return await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url).toString(), c.req.raw));
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: any, env: Bindings) {
+    await cleanupExpiredAvatarDeletes(env);
+  },
+};

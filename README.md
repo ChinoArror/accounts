@@ -174,7 +174,20 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-sessions.s
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
 ```
+
+## Avatar Editing
+
+Users can update avatars from `/user/:uuid` in the Edit Info modal.
+
+- Upload opens an adjustment window with the same square rounded preview used by the account page.
+- Users can adjust size, horizontal position, and vertical position before saving.
+- Saving stores two R2 objects: the original upload under `Avatar/<uuid>/original/` and the cropped display image under `Avatar/<uuid>/cropped/`.
+- `avatar_url` in JWTs and API responses always points to the cropped display image.
+- Future edits use the original image when it exists. Older avatars without an original are treated as already-cropped images.
+- Delete marks the avatar for removal and switches the UI back to the generated name avatar after Save.
+- After deletion, the same open account interface can restore the avatar for 30 minutes. A scheduled Worker cron clears expired pending images from R2.
 
 ## Email Setup
 
