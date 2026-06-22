@@ -182,10 +182,10 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2
 Users can update avatars from `/user/:uuid` in the Edit Info modal.
 
 - Upload opens an adjustment window with the same square rounded preview used by the account page.
-- Users can adjust size, horizontal position, and vertical position before saving.
-- Saving stores two R2 objects: the original upload under `Avatar/<uuid>/original/` and the cropped display image under `Avatar/<uuid>/cropped/`.
-- `avatar_url` in JWTs and API responses always points to the cropped display image.
-- Future edits use the original image when it exists. Older avatars without an original are treated as already-cropped images.
+- Users can adjust size, horizontal position, and vertical position before saving. The editor clamps movement so the preview never exposes empty image bounds.
+- Saving in the adjustment window immediately writes the avatar to R2. It stores two R2 objects: the original image under `Avatar/<uuid>/original/` and the cropped display image under `Avatar/<uuid>/cropped/`.
+- `avatar_url` in JWTs and API responses always points to the cropped display image and includes a version query derived from the stored object key so browsers refresh after avatar changes.
+- Future edits use the original image when it exists, including after later sessions. Older avatars without an original are treated as already-cropped images.
 - Delete marks the avatar for removal and switches the UI back to the generated name avatar after Save.
 - After deletion, the same open account interface can restore the avatar for 30 minutes. A scheduled Worker cron clears expired pending images from R2.
 
@@ -252,7 +252,7 @@ JWTs include:
   "email": "user@example.com",
   "email_verified": true,
   "role": "user",
-  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid",
+  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid?v=Avatar%2Fuser_uuid%2Fcropped%2Favatar-cropped-...",
   "auth_provider": "email",
   "session_id": "session_uuid"
 }
@@ -260,4 +260,4 @@ JWTs include:
 
 Subapps should use `role` for authorization and `sub`/`uuid` as the stable user identifier. All user-owned assets, app data, quota records, audit logs, and analytics records must be keyed by the Auth Center `uuid`. Display fields such as `name`, `username`, `fullname`, and `email` are only for UI convenience and must not be used to join or own records; otherwise a deleted account and a later account with the same visible name could be linked incorrectly.
 
-`avatar_url` is a complete URL when the user has an avatar. Subapps can render it directly, and should keep using `uuid` as the ownership key even when showing the avatar next to a display name.
+`avatar_url` is a complete cache-busted URL when the user has an avatar. Subapps can render it directly, and should keep using `uuid` as the ownership key even when showing the avatar next to a display name.

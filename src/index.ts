@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { basicAuth } from 'hono/basic-auth';
 import { cors } from 'hono/cors';
 import { hashPassword, generateSalt, verifyPassword, generateJWT, verifyJWT } from './auth';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -57,11 +56,17 @@ type Bindings = {
   ACCESS_TOKEN_TTL_SECONDS?: string;
   REFRESH_TOKEN_TTL_SECONDS?: string;
   NEAR_LIMIT_THRESHOLD?: string;
+  ADMIN_COOKIE_EXPIRY_DAYS?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
 app.use('*', cors());
+
+function getAdminCookieExpiryDays(c: any) {
+  const configured = Number(c.env.ADMIN_COOKIE_EXPIRY_DAYS);
+  return Number.isFinite(configured) && configured > 0 ? Math.round(configured) : 7;
+}
 
 function getClientIp(c: any) {
   return c.req.header('CF-Connecting-IP')
@@ -141,12 +146,14 @@ function getRequestOrigin(c: any) {
 
 function buildAvatarUrl(c: any, uuid: string, avatarKey?: string | null, legacyAvatarData?: string | null) {
   if (!avatarKey && !legacyAvatarData) return null;
-  return `${getRequestOrigin(c)}/api/avatar/${uuid}`;
+  const version = avatarKey || 'legacy';
+  return `${getRequestOrigin(c)}/api/avatar/${uuid}?v=${encodeURIComponent(version)}`;
 }
 
 function buildAvatarOriginalUrl(c: any, uuid: string, originalKey?: string | null, avatarKey?: string | null, legacyAvatarData?: string | null) {
   if (!originalKey && !avatarKey && !legacyAvatarData) return null;
-  return `${getRequestOrigin(c)}/api/avatar/${uuid}/original`;
+  const version = originalKey || avatarKey || 'legacy';
+  return `${getRequestOrigin(c)}/api/avatar/${uuid}/original?v=${encodeURIComponent(version)}`;
 }
 
 function getAvatarExtension(contentType: string) {
@@ -292,14 +299,17 @@ async function resolveProfileAvatarUpdate(c: any, uuid: string, body: any, curre
       throw new Error('Avatar original must be an uploaded image');
     }
 
+    const previousOriginalKey = currentUser.avatar_original_key || null;
     const nextOriginalKey = originalData
       ? await putAvatarObject(c, uuid, 'original', originalData)
-      : currentUser.avatar_original_key || null;
+      : previousOriginalKey;
     const nextAvatarKey = await putAvatarObject(c, uuid, 'cropped', croppedData);
 
-    await deleteAvatarIfPresent(c, currentUser.avatar_key);
-    if (currentUser.avatar_original_key && currentUser.avatar_original_key !== currentUser.avatar_key) {
-      await deleteAvatarIfPresent(c, currentUser.avatar_original_key);
+    if (currentUser.avatar_key && currentUser.avatar_key !== nextOriginalKey) {
+      await deleteAvatarIfPresent(c, currentUser.avatar_key);
+    }
+    if (previousOriginalKey && previousOriginalKey !== currentUser.avatar_key && previousOriginalKey !== nextOriginalKey) {
+      await deleteAvatarIfPresent(c, previousOriginalKey);
     }
     await deleteAvatarIfPresent(c, currentUser.avatar_pending_delete_key);
     await deleteAvatarIfPresent(c, currentUser.avatar_original_pending_delete_key);
@@ -505,7 +515,7 @@ app.post('/login', async (c) => {
       email_verified: !!c.env.ADMIN_EMAIL,
       auth_provider: 'sso',
       status: 'active',
-      cookie_expiry_days: 7
+      cookie_expiry_days: getAdminCookieExpiryDays(c)
     };
   } else if (identifier === c.env.ADMIN_USERNAME || (!!adminEmail && loginEmail === adminEmail)) {
     return c.json({ error: 'Invalid credentials' }, 401);
@@ -550,6 +560,10 @@ app.post('/login', async (c) => {
     user_id: userToAuth.user_id,
     name: userToAuth.name,
     username: userToAuth.username,
+    email: userToAuth.email || null,
+    email_verified: !!userToAuth.email_verified,
+    role: userToAuth.role || 'user',
+    auth_provider: userToAuth.auth_provider || 'legacy',
     avatar_url: buildAvatarUrl(c, userToAuth.uuid, userToAuth.avatar_key, userToAuth.avatar_data),
     timestamp: Math.floor(Date.now() / 1000)
   });
@@ -743,10 +757,10 @@ app.get('/api/avatar/:uuid/original', async (c) => {
 
   if (!user) return c.json({ error: 'User not found' }, 404);
 
-  const key = user.avatar_original_key || user.avatar_key;
-  if (key) {
+  const keys = [user.avatar_original_key, user.avatar_key].filter(Boolean);
+  for (const key of keys) {
     const object = await c.env.AVATAR_BUCKET.get(key);
-    if (!object) return c.json({ error: 'Avatar not found' }, 404);
+    if (!object) continue;
 
     const headers = new Headers();
     object.writeHttpMetadata(headers);
@@ -1264,7 +1278,7 @@ app.get('/api/github/callback', async (c) => {
         email_verified: !!c.env.ADMIN_EMAIL,
         auth_provider: 'sso',
         status: 'active',
-        cookie_expiry_days: 7
+        cookie_expiry_days: getAdminCookieExpiryDays(c)
       };
     } else {
       const user: any = await c.env.DB.prepare('SELECT * FROM users WHERE github_id = ?').bind(githubId).first();
@@ -1581,7 +1595,7 @@ app.post('/api/passkey/verify-authentication', async (c) => {
         userToAuth = {
         uuid: 'admin', user_id: "0", name: 'Admin', username: c.env.ADMIN_USERNAME,
           role: 'admin', email: c.env.ADMIN_EMAIL || null, email_verified: !!c.env.ADMIN_EMAIL, auth_provider: 'sso',
-          status: 'active', cookie_expiry_days: 7
+          status: 'active', cookie_expiry_days: getAdminCookieExpiryDays(c)
         };
       } else {
         const user: any = await c.env.DB.prepare('SELECT * FROM users WHERE uuid = ?').bind(uuid).first();
@@ -1639,11 +1653,19 @@ async function adminAuthGuard(c: any, next: any) {
     } catch (e) { }
   }
 
-  const auth = basicAuth({
-    username: c.env.ADMIN_USERNAME,
-    password: c.env.ADMIN_PASSWORD,
-  });
-  return auth(c, next);
+  if (authHeader && authHeader.startsWith('Basic ')) {
+    try {
+      const decoded = atob(authHeader.substring(6));
+      const separatorIndex = decoded.indexOf(':');
+      const username = separatorIndex >= 0 ? decoded.slice(0, separatorIndex) : '';
+      const password = separatorIndex >= 0 ? decoded.slice(separatorIndex + 1) : '';
+      if (username === c.env.ADMIN_USERNAME && password === c.env.ADMIN_PASSWORD) {
+        return next();
+      }
+    } catch (e) { }
+  }
+
+  return c.json({ error: 'Admin authentication required' }, 401);
 }
 
 // Apply admin auth to all admin routes. New code must use role=admin for JWTs.

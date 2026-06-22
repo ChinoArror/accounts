@@ -17,6 +17,7 @@ import UserEditProfile from './UserEditProfile';
 import SessionCenter from './SessionCenter';
 import RegisterCodeManager from './RegisterCodeManager';
 import PermissionMatrix from './PermissionMatrix';
+import DatePicker from './DatePicker';
 import {
   AccountSecurityPage,
   AdminSecurityPage,
@@ -221,7 +222,12 @@ function Dashboard() {
     }
 
     const saved = localStorage.getItem('sso_admin_auth');
-    if (saved) {
+    if (saved?.startsWith('Basic ')) {
+      localStorage.removeItem('sso_admin_auth');
+      localStorage.removeItem('sso_admin_name');
+    }
+
+    if (saved && !saved.startsWith('Basic ')) {
       setAuthHeader(saved);
       setIsLogged(true);
       setAdminName(localStorage.getItem('sso_admin_name') || 'Admin');
@@ -290,22 +296,24 @@ function Dashboard() {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const token = btoa(`${credentials.username}:${credentials.password}`);
-    const header = `Basic ${token}`;
-
-    // Test login
-    fetch(`${API_BASE}/admin/users`, { headers: { 'Authorization': header } })
-      .then(res => {
-        if (res.ok) {
-          localStorage.setItem('sso_admin_auth', header);
-          localStorage.setItem('sso_admin_name', credentials.username);
-          setAuthHeader(header);
-          setAdminName(credentials.username);
-          setIsLogged(true);
-        } else {
-          alert('Invalid credentials');
-        }
-      }).catch(err => alert('Network error: ' + err.message));
+    fetch(`${API_BASE}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ username: credentials.username, password: credentials.password, app_id: 'auth-center' }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Invalid credentials');
+        if (data.role !== 'admin') throw new Error('Admin role required');
+        const header = `Bearer ${data.token || data.jwt}`;
+        localStorage.setItem('sso_admin_auth', header);
+        localStorage.setItem('sso_admin_name', data.name || data.username || credentials.username);
+        setAuthHeader(header);
+        setAdminName(data.name || data.username || credentials.username);
+        setIsLogged(true);
+      })
+      .catch((err) => alert(err.message || 'Network error'));
   };
 
   const handleSsoLogin = async (e: React.FormEvent) => {
@@ -793,7 +801,7 @@ function Dashboard() {
                         <input name="username" placeholder="Username" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
                         <input name="name" placeholder="Full Name" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
                         <input name="password" type="password" placeholder="Password" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
-                        <input name="birthday" type="date" className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30 text-white" />
+                        <DatePicker name="birthday" placeholder="Birthday" />
                         <label className="block rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-3 text-sm text-white/60">
                           Avatar (Optional)
                           <input name="avatar" type="file" accept="image/*" className="mt-2 block w-full text-xs text-white/50 file:mr-3 file:rounded-lg file:border-0 file:bg-white/10 file:px-3 file:py-2 file:text-white" />

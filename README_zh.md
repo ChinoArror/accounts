@@ -183,10 +183,10 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2
 用户可在 `/user/:uuid` 的 Edit Info 悬浮窗口中修改头像。
 
 - Upload 会打开头像调整窗口，预览框与账号页头像框保持同等比例的方形圆角效果。
-- 可调整大小、横向位置和纵向位置，确认后再保存。
-- Save 后会在 R2 中保存两份图片：原图保存到 `Avatar/<uuid>/original/`，裁切后的显示图保存到 `Avatar/<uuid>/cropped/`。
-- JWT 和 API 返回的 `avatar_url` 始终指向裁切后的显示图。
-- 下次修改头像时优先基于原图重新调整；旧头像没有原图时，会按已裁切头像处理。
+- 可调整大小、横向位置和纵向位置，编辑器会限制移动范围，预览中不会露出图片外的空白边界。
+- 在调整窗口点击 Save 会立即写入 R2，保存两份图片：原图保存到 `Avatar/<uuid>/original/`，裁切后的显示图保存到 `Avatar/<uuid>/cropped/`。
+- JWT 和 API 返回的 `avatar_url` 始终指向裁切后的显示图，并带有基于对象 key 的版本参数，头像更新后浏览器会刷新缓存。
+- 下次修改头像时优先基于原图重新调整，包括之后重新进入页面的情况；旧头像没有原图时，会按已裁切头像处理。
 - Delete 后再 Save，会恢复为根据 name 生成的默认头像。
 - 删除后，在同一个已打开的账号界面内 30 分钟内可 Restore；超过 30 分钟后，Worker cron 会自动清理 R2 中等待删除的图片。
 
@@ -253,7 +253,7 @@ JWT 示例：
   "email": "user@example.com",
   "email_verified": true,
   "role": "user",
-  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid",
+  "avatar_url": "https://accounts.aryuki.com/api/avatar/user_uuid?v=Avatar%2Fuser_uuid%2Fcropped%2Favatar-cropped-...",
   "auth_provider": "email",
   "session_id": "session_uuid"
 }
@@ -261,4 +261,4 @@ JWT 示例：
 
 子应用应使用 `role` 做权限判断，使用 `sub` 或 `uuid` 作为稳定用户标识。所有属于用户的资产、业务数据、额度记录、审计日志和统计记录，都必须使用 Auth Center 的 `uuid` 关联。`name`、`username`、`fullname`、`email` 等字段只用于页面展示和用户识别，不得作为数据归属键，避免删除账号后，新出现的同名账号错误对应原有记录。
 
-当用户设置了头像时，`avatar_url` 会以完整 URL 下发给子应用，子应用可以直接渲染；但头像展示旁边的名称仍只是显示信息，数据归属继续以 `uuid` 为准。
+当用户设置了头像时，`avatar_url` 会以带缓存版本的完整 URL 下发给子应用，子应用可以直接渲染；但头像展示旁边的名称仍只是显示信息，数据归属继续以 `uuid` 为准。

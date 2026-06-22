@@ -17,16 +17,21 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ThemeToggle, useThemeMode } from './theme';
 import { API_BASE, formatDateTime, useRequiredUserSession } from './userPortal';
+import DatePicker from './DatePicker';
 
 type ModalKind = 'profile' | 'avatarCrop' | 'email' | 'password' | 'code' | 'sessions' | null;
 
 type AvatarEditorState = {
   sourceUrl: string;
   sourceData: string;
+  naturalWidth: number;
+  naturalHeight: number;
   scale: number;
   offsetX: number;
   offsetY: number;
 };
+
+const AVATAR_PREVIEW_SIZE = 240;
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -42,7 +47,7 @@ function Notice({ children, tone = 'normal' }: { children: React.ReactNode; tone
   return <div className={`rounded-[12px] border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3 text-sm ${color}`}>{children}</div>;
 }
 
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+function Modal({ title, children, onClose, wide = false }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <motion.div
       className="fixed inset-0 z-50 flex overscroll-contain bg-[var(--overlay)] p-3 backdrop-blur-sm sm:items-center sm:justify-center sm:p-6"
@@ -56,7 +61,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
         initial={{ opacity: 0, y: 24, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 18, scale: 0.98 }}
-        className="ui-auth-card mt-auto max-h-[92dvh] w-full max-w-[520px] overflow-y-auto overscroll-contain p-5 sm:mt-0 sm:p-6"
+        className={`ui-auth-card ui-modal-scroll mt-auto max-h-[92dvh] w-full overflow-y-auto overflow-x-hidden overscroll-contain p-5 sm:mt-0 sm:p-6 ${wide ? 'max-w-[980px]' : 'max-w-[520px]'}`}
         onTouchMove={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
       >
@@ -72,6 +77,46 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
         {children}
       </motion.div>
     </motion.div>
+  );
+}
+
+function AvatarAdjustRow({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  const clamp = (next: number) => Math.min(max, Math.max(min, Number(next.toFixed(2))));
+
+  return (
+    <Field label={label}>
+      <div className="flex items-center gap-2">
+        <button type="button" className="ui-icon-button h-10 w-10 shrink-0" onClick={() => onChange(clamp(value - step))} aria-label={`Decrease ${label}`}>
+          -
+        </button>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="min-w-0 flex-1"
+        />
+        <button type="button" className="ui-icon-button h-10 w-10 shrink-0" onClick={() => onChange(clamp(value + step))} aria-label={`Increase ${label}`}>
+          +
+        </button>
+      </div>
+    </Field>
   );
 }
 
@@ -111,7 +156,7 @@ async function cropAvatarToDataUrl(editor: AvatarEditorState) {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.clearRect(0, 0, size, size);
-  const previewSize = 240;
+  const previewSize = AVATAR_PREVIEW_SIZE;
   const baseScale = Math.max(size / image.naturalWidth, size / image.naturalHeight) * editor.scale;
   const width = image.naturalWidth * baseScale;
   const height = image.naturalHeight * baseScale;
@@ -119,6 +164,26 @@ async function cropAvatarToDataUrl(editor: AvatarEditorState) {
   const y = (size - height) / 2 + editor.offsetY * (size / previewSize);
   ctx.drawImage(image, x, y, width, height);
   return canvas.toDataURL('image/png', 0.95);
+}
+
+function getAvatarPreviewLayout(editor: AvatarEditorState) {
+  const baseScale = Math.max(AVATAR_PREVIEW_SIZE / editor.naturalWidth, AVATAR_PREVIEW_SIZE / editor.naturalHeight) * editor.scale;
+  const width = editor.naturalWidth * baseScale;
+  const height = editor.naturalHeight * baseScale;
+  const maxOffsetX = Math.max(0, (width - AVATAR_PREVIEW_SIZE) / 2);
+  const maxOffsetY = Math.max(0, (height - AVATAR_PREVIEW_SIZE) / 2);
+  return { width, height, maxOffsetX, maxOffsetY };
+}
+
+function clampAvatarEditor(editor: AvatarEditorState): AvatarEditorState {
+  const scale = Math.max(1, Math.min(3, editor.scale));
+  const next = { ...editor, scale };
+  const { maxOffsetX, maxOffsetY } = getAvatarPreviewLayout(next);
+  return {
+    ...next,
+    offsetX: Math.min(maxOffsetX, Math.max(-maxOffsetX, next.offsetX)),
+    offsetY: Math.min(maxOffsetY, Math.max(-maxOffsetY, next.offsetY)),
+  };
 }
 
 function TurnstileBox({ siteKey, onToken, resetSignal = 0 }: { siteKey?: string; onToken: (token: string) => void; resetSignal?: number }) {
@@ -351,7 +416,16 @@ export default function UserHome() {
     setMessage('');
     try {
       const sourceData = source.startsWith('data:image/') ? source : await imageUrlToDataUrl(source);
-      setAvatarEditor({ sourceUrl: sourceData, sourceData, scale: 1, offsetX: 0, offsetY: 0 });
+      const image = await loadImage(sourceData);
+      setAvatarEditor(clampAvatarEditor({
+        sourceUrl: sourceData,
+        sourceData,
+        naturalWidth: image.naturalWidth,
+        naturalHeight: image.naturalHeight,
+        scale: 1,
+        offsetX: 0,
+        offsetY: 0,
+      }));
       setModal('avatarCrop');
     } catch (error: any) {
       setMessage(error.message || 'Unable to open avatar editor.');
@@ -363,18 +437,36 @@ export default function UserHome() {
     setSaving(true);
     setMessage('');
     try {
-      const cropped = await cropAvatarToDataUrl(avatarEditor);
+      const safeEditor = clampAvatarEditor(avatarEditor);
+      const cropped = await cropAvatarToDataUrl(safeEditor);
+      const res = await fetch(`${API_BASE}/api/user/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: profileForm.name,
+          birthday: profileForm.birthday || null,
+          avatar_original_data: safeEditor.sourceData,
+          avatar_cropped_data: cropped,
+          avatar_delete: false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to save avatar');
+      setSession((current) => current ? { ...current, ...data.user } : current);
+      setAvatarPreview(data.user?.avatar_url || cropped);
+      setAvatarRestore(data.user?.avatar_restore_token && data.user?.avatar_delete_deadline ? { token: data.user.avatar_restore_token, deadline: data.user.avatar_delete_deadline } : null);
       setProfileForm((current) => ({
         ...current,
-        avatar_original_data: avatarEditor.sourceData,
-        avatar_cropped_data: cropped,
+        avatar_data: undefined,
+        avatar_original_data: undefined,
+        avatar_cropped_data: undefined,
         avatar_delete: false,
       }));
-      setAvatarPreview(cropped);
-      setAvatarRestore(null);
-      setModal('profile');
+      setMessage('Avatar updated.');
+      setModal(null);
     } catch (error: any) {
-      setMessage(error.message || 'Unable to crop avatar.');
+      setMessage(error.message || 'Unable to save avatar.');
     } finally {
       setSaving(false);
     }
@@ -545,7 +637,7 @@ export default function UserHome() {
                 <input value={profileForm.name} onChange={(event) => setProfileForm({ ...profileForm, name: event.target.value })} required />
               </Field>
               <Field label="Birthday">
-                <input type="date" value={profileForm.birthday} onChange={(event) => setProfileForm({ ...profileForm, birthday: event.target.value })} />
+                <DatePicker value={profileForm.birthday} onChange={(value) => setProfileForm({ ...profileForm, birthday: value })} />
               </Field>
               <Field label="Avatar">
                 <div className="space-y-3">
@@ -590,35 +682,54 @@ export default function UserHome() {
         ) : null}
 
         {modal === 'avatarCrop' && avatarEditor ? (
-          <Modal title="Adjust Avatar" onClose={() => setModal('profile')}>
-            <div className="space-y-5">
-              <div className="flex justify-center">
-                <div className="rounded-[24px] bg-[var(--surface-alt)] p-5 shadow-inner">
-                  <div className="relative h-[240px] w-[240px] overflow-hidden rounded-[20px] bg-[var(--surface)] shadow-[0_0_0_999px_rgba(15,23,42,0.20)] ring-2 ring-[var(--primary)]/40">
+          <Modal title="Adjust Avatar" onClose={() => setModal('profile')} wide>
+            <div className="grid gap-6 lg:grid-cols-[300px_minmax(360px,1fr)] lg:items-start">
+              <div className="flex justify-center lg:justify-start">
+                <div className="rounded-[24px] border border-[var(--border)] bg-[var(--surface-alt)] p-5 shadow-sm">
+                  <div className="relative h-[240px] w-[240px] overflow-hidden rounded-[20px] bg-[var(--surface)] shadow-[0_18px_42px_rgba(22,119,255,0.14)] ring-2 ring-[var(--primary)]/35">
                     <img
                       src={avatarEditor.sourceUrl}
                       alt="Avatar crop preview"
-                      className="h-full w-full object-cover"
+                      className="absolute left-1/2 top-1/2 max-w-none select-none"
                       style={{
-                        transform: `translate(${avatarEditor.offsetX}px, ${avatarEditor.offsetY}px) scale(${avatarEditor.scale})`,
-                        transformOrigin: 'center',
+                        width: `${getAvatarPreviewLayout(avatarEditor).width}px`,
+                        height: `${getAvatarPreviewLayout(avatarEditor).height}px`,
+                        transform: `translate(-50%, -50%) translate(${avatarEditor.offsetX}px, ${avatarEditor.offsetY}px)`,
                       }}
+                      draggable={false}
                     />
                   </div>
                 </div>
               </div>
-              <Field label="Size">
-                <input type="range" min="1" max="3" step="0.01" value={avatarEditor.scale} onChange={(event) => setAvatarEditor({ ...avatarEditor, scale: Number(event.target.value) })} />
-              </Field>
-              <Field label="Horizontal">
-                <input type="range" min="-120" max="120" step="1" value={avatarEditor.offsetX} onChange={(event) => setAvatarEditor({ ...avatarEditor, offsetX: Number(event.target.value) })} />
-              </Field>
-              <Field label="Vertical">
-                <input type="range" min="-120" max="120" step="1" value={avatarEditor.offsetY} onChange={(event) => setAvatarEditor({ ...avatarEditor, offsetY: Number(event.target.value) })} />
-              </Field>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button type="button" className="ui-button-secondary" onClick={() => setModal('profile')}>Cancel</button>
-                <button type="button" className="ui-button-primary" onClick={saveAvatarCrop} disabled={saving}>{saving ? 'Saving...' : 'Save Crop'}</button>
+              <div className="space-y-5">
+                <AvatarAdjustRow
+                  label="Size"
+                  min={1}
+                  max={3}
+                  step={0.01}
+                  value={avatarEditor.scale}
+                  onChange={(value) => setAvatarEditor((current) => current ? clampAvatarEditor({ ...current, scale: value }) : current)}
+                />
+                <AvatarAdjustRow
+                  label="Horizontal"
+                  min={-getAvatarPreviewLayout(avatarEditor).maxOffsetX}
+                  max={getAvatarPreviewLayout(avatarEditor).maxOffsetX}
+                  step={1}
+                  value={avatarEditor.offsetX}
+                  onChange={(value) => setAvatarEditor((current) => current ? clampAvatarEditor({ ...current, offsetX: value }) : current)}
+                />
+                <AvatarAdjustRow
+                  label="Vertical"
+                  min={-getAvatarPreviewLayout(avatarEditor).maxOffsetY}
+                  max={getAvatarPreviewLayout(avatarEditor).maxOffsetY}
+                  step={1}
+                  value={avatarEditor.offsetY}
+                  onChange={(value) => setAvatarEditor((current) => current ? clampAvatarEditor({ ...current, offsetY: value }) : current)}
+                />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button type="button" className="ui-button-secondary" onClick={() => setModal('profile')}>Cancel</button>
+                  <button type="button" className="ui-button-primary" onClick={saveAvatarCrop} disabled={saving}>{saving ? 'Saving...' : 'Save Crop'}</button>
+                </div>
               </div>
             </div>
           </Modal>
