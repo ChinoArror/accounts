@@ -441,6 +441,296 @@ async function applyRegisterCodeConfigToUser(c: any, uuid: string, config: Regis
   }
 }
 
+const TEST_DATA_SCOPES = new Set(['public_read', 'public_write', 'private_read', 'private_write']);
+const TEST_ROLES = new Set(['user', 'admin']);
+
+function getEffectiveTestDataScopes(scope: string) {
+  switch (scope) {
+    case 'public_read':
+      return ['public_read', 'private_read'];
+    case 'public_write':
+      return ['public_read', 'public_write', 'private_read', 'private_write'];
+    case 'private_write':
+      return ['private_read', 'private_write'];
+    case 'private_read':
+    default:
+      return ['private_read'];
+  }
+}
+
+function randomToken(prefix = '') {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const value = Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${prefix}${value}`;
+}
+
+async function hashTestSecret(value: string) {
+  return sha256Hex(`test-auth:${value}`);
+}
+
+async function hashTestToken(value: string) {
+  return sha256Hex(`test-token:${value}`);
+}
+
+async function getSecretCryptoKey(secret: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`test-secret-cipher:${secret}`));
+  return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function encryptTestSecret(c: any, secret: string) {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const key = await getSecretCryptoKey(c.env.JWT_SECRET);
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(secret));
+  return `${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(cipher))}`;
+}
+
+async function decryptTestSecret(c: any, cipher?: string | null) {
+  if (!cipher || !cipher.includes('.')) return null;
+  try {
+    const [ivRaw, cipherRaw] = cipher.split('.');
+    const key = await getSecretCryptoKey(c.env.JWT_SECRET);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(ivRaw) }, key, base64ToBytes(cipherRaw));
+    return new TextDecoder().decode(plain);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeTestName(input: unknown) {
+  return String(input || '').trim().toLowerCase().replace(/^@/, '');
+}
+
+function parseJsonArrayField(value: unknown, fallback: string[] = []) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item).trim()).filter(Boolean) : fallback;
+  } catch {
+    return value.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+}
+
+function serializeStringArray(value: unknown) {
+  return JSON.stringify(parseJsonArrayField(value));
+}
+
+function normalizeTestIdentityRow(row: any) {
+  if (!row) return null;
+  return {
+    ...row,
+    allowed_subapps: parseJsonArrayField(row.allowed_subapps),
+    allowed_ip_ranges: parseJsonArrayField(row.allowed_ip_ranges),
+    session_ttl_minutes: Number(row.session_ttl_minutes || 30),
+    one_time_token_ttl_seconds: Number(row.one_time_token_ttl_seconds || 60),
+    max_api_calls_per_session: row.max_api_calls_per_session == null ? null : Number(row.max_api_calls_per_session),
+  };
+}
+
+function testIdentityAllowsSubapp(identity: any, targetSubapp: string) {
+  const allowed = parseJsonArrayField(identity.allowed_subapps);
+  return allowed.includes('*') || allowed.includes('all') || allowed.includes(targetSubapp);
+}
+
+function normalizeTestIdentityInput(body: any) {
+  const name = normalizeTestName(body?.name);
+  if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(name)) {
+    throw new Error('Name must be 2-63 lowercase letters, numbers, hyphen, or underscore');
+  }
+  const role = TEST_ROLES.has(String(body?.role || 'user')) ? String(body?.role || 'user') : 'user';
+  const dataScope = TEST_DATA_SCOPES.has(String(body?.data_scope || 'public_read')) ? String(body?.data_scope || 'public_read') : 'public_read';
+  const allowedSubapps = parseJsonArrayField(body?.allowed_subapps);
+  if (!allowedSubapps.length) throw new Error('Allowed subapps is required');
+  const sessionTtl = Math.max(5, Math.min(1440, Math.round(Number(body?.session_ttl_minutes || 30))));
+  const tokenTtl = Math.max(15, Math.min(600, Math.round(Number(body?.one_time_token_ttl_seconds || 60))));
+  const expiresAt = String(body?.expires_at || '').trim();
+  if (!expiresAt || Number.isNaN(Date.parse(expiresAt))) throw new Error('Expires at is required');
+  return {
+    name,
+    display_name: String(body?.display_name || name).trim(),
+    role,
+    allowed_subapps: allowedSubapps,
+    target_default_subapp: String(body?.target_default_subapp || allowedSubapps[0] || '').trim() || null,
+    expires_at: new Date(Date.parse(expiresAt)).toISOString(),
+    session_ttl_minutes: sessionTtl,
+    one_time_token_ttl_seconds: tokenTtl,
+    data_scope: dataScope,
+    max_api_calls_per_session: normalizeLimitValue(body?.max_api_calls_per_session),
+    allowed_ip_ranges: parseJsonArrayField(body?.allowed_ip_ranges),
+    notes: String(body?.notes || '').trim() || null,
+  };
+}
+
+function getTestIdentityRiskReasons(input: any) {
+  const reasons: string[] = [];
+  if (input.data_scope === 'public_write') reasons.push('public_write can open sensitive public config, template, and cache APIs');
+  if (input.data_scope === 'private_read') reasons.push('private_read can read real user content, files, records, or settings');
+  if (input.data_scope === 'private_write') reasons.push('private_write can read and modify real app data');
+  if (input.role === 'admin') reasons.push('模拟管理员 role=admin');
+  if (Number(input.session_ttl_minutes) > 60) reasons.push('测试 session 超过 60 分钟');
+  if (parseJsonArrayField(input.allowed_subapps).some((item) => item === '*' || item === 'all')) reasons.push('允许访问全部应用');
+  if (Date.parse(input.expires_at) - Date.now() > 7 * 86400 * 1000) reasons.push('测试身份有效期超过 7 天');
+  return reasons;
+}
+
+function buildTestAgentCommand(c: any, identity: any, secret?: string | null) {
+  const target = identity.target_default_subapp || parseJsonArrayField(identity.allowed_subapps)[0] || '<target_subapp>';
+  const secretValue = secret || '<rotate-secret-to-view-once>';
+  return [
+    `npx auth-center-cli test-login --auth ${getRequestOrigin(c)} --app ${target} --name ${identity.name} --secret ${secretValue}`,
+    '',
+    `curl -X POST "${getRequestOrigin(c)}/api/test-auth/exchange" \\`,
+    '  -H "Content-Type: application/json" \\',
+    `  -d '{"name":"${identity.name}","secret":"${secretValue}","target_subapp":"${target}"}'`,
+    '',
+    `提醒：login_url 需在 ${identity.one_time_token_ttl_seconds || 60} 秒内打开；登录后的测试 session 有效 ${identity.session_ttl_minutes || 30} 分钟；data_scope=${identity.data_scope}；不要把 secret 写入 GitHub、日志、公开聊天或前端代码。`,
+  ].join('\n');
+}
+
+async function writeTestAudit(c: any, input: { testIdentityId?: string | null; eventType: string; targetSubapp?: string | null; success: boolean; detail?: any }) {
+  await c.env.DB.prepare(`
+    INSERT INTO test_auth_audit_logs (id, test_identity_id, event_type, target_subapp, ip_hash, user_agent, success, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    crypto.randomUUID(),
+    input.testIdentityId || null,
+    input.eventType,
+    input.targetSubapp || null,
+    await sha256Hex(getClientIp(c)),
+    c.req.header('User-Agent') || null,
+    input.success ? 1 : 0,
+    input.detail === undefined ? null : JSON.stringify(input.detail),
+    new Date().toISOString()
+  ).run().catch(() => null);
+}
+
+function ipv4ToNumber(ip: string) {
+  const parts = ip.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return ((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3];
+}
+
+function ipMatchesRange(ip: string | null, range: string) {
+  if (!ip) return false;
+  const normalizedRange = range.trim();
+  if (!normalizedRange) return false;
+  if (!normalizedRange.includes('/')) return ip === normalizedRange;
+  const [base, bitsRaw] = normalizedRange.split('/');
+  const bits = Number(bitsRaw);
+  const ipNum = ipv4ToNumber(ip);
+  const baseNum = ipv4ToNumber(base);
+  if (ipNum == null || baseNum == null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return ((ipNum >>> 0) & mask) === ((baseNum >>> 0) & mask);
+}
+
+function requestIpAllowed(c: any, identity: any) {
+  const ranges = parseJsonArrayField(identity.allowed_ip_ranges);
+  if (!ranges.length) return true;
+  const ip = getClientIp(c);
+  return ranges.some((range) => ipMatchesRange(ip, range));
+}
+
+function buildTestJwtPayload(c: any, identity: any, sessionId: string, targetSubapp: string) {
+  return {
+    sub: identity.id,
+    uuid: identity.id,
+    user_id: identity.id,
+    username: identity.name,
+    name: identity.display_name || identity.name,
+    role: identity.role || 'user',
+    status: identity.status,
+    auth_provider: 'test_identity',
+    identity_type: 'test',
+    test_session: true,
+    allowed_subapps: parseJsonArrayField(identity.allowed_subapps),
+    data_scope: identity.data_scope || 'public_read',
+    data_scope_permissions: getEffectiveTestDataScopes(identity.data_scope || 'public_read'),
+    session_id: sessionId,
+    target_subapp: targetSubapp,
+    iat: Math.floor(Date.now() / 1000),
+  };
+}
+
+async function getTestActivity(c: any, id: string) {
+  const start = c.req?.query?.('start');
+  const end = c.req?.query?.('end');
+  const usageWindow = `${start ? ' AND created_at >= ?' : ''}${end ? ' AND created_at <= ?' : ''}`;
+  const usageBinds = [id, ...(start ? [String(start)] : []), ...(end ? [String(end)] : [])];
+  const [activeSessions, recentSessions, recentLogs, usageRows, usageSessionRows, totals] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) AS count FROM test_sessions WHERE test_identity_id = ? AND status = 'active' AND revoked_at IS NULL AND expires_at > ?`).bind(id, new Date().toISOString()).first(),
+    c.env.DB.prepare(`SELECT * FROM test_sessions WHERE test_identity_id = ? ORDER BY created_at DESC LIMIT 10`).bind(id).all(),
+    c.env.DB.prepare(`SELECT * FROM test_auth_audit_logs WHERE test_identity_id = ? ORDER BY created_at DESC LIMIT 20`).bind(id).all(),
+    c.env.DB.prepare(`SELECT subapp, SUM(amount) AS calls FROM test_api_usage_records WHERE test_identity_id = ?${usageWindow} GROUP BY subapp ORDER BY calls DESC`).bind(...usageBinds).all(),
+    c.env.DB.prepare(`SELECT COALESCE(session_id, 'unknown') AS session_id, SUM(amount) AS calls FROM test_api_usage_records WHERE test_identity_id = ?${usageWindow} GROUP BY session_id ORDER BY calls DESC`).bind(...usageBinds).all(),
+    c.env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM test_sessions WHERE test_identity_id = ?) AS login_count,
+        (SELECT MAX(created_at) FROM test_sessions WHERE test_identity_id = ?) AS recent_login,
+        (SELECT COUNT(*) FROM test_auth_audit_logs WHERE test_identity_id = ? AND event_type = 'exchange_failed') AS failed_exchange_count,
+        (SELECT COALESCE(SUM(amount), 0) FROM test_api_usage_records WHERE test_identity_id = ?) AS api_call_count
+    `).bind(id, id, id, id).first(),
+  ]);
+  return {
+    active_session_count: Number(activeSessions?.count || 0),
+    recent_sessions: recentSessions.results || [],
+    recent_audit_logs: recentLogs.results || [],
+    usage_by_subapp: usageRows.results || [],
+    usage_by_session: usageSessionRows.results || [],
+    login_count: Number(totals?.login_count || 0),
+    recent_login: totals?.recent_login || null,
+    failed_exchange_count: Number(totals?.failed_exchange_count || 0),
+    api_call_count: Number(totals?.api_call_count || 0),
+  };
+}
+
+async function cleanupExpiredTestIdentities(c: any) {
+  const now = new Date().toISOString();
+  const expired: any = await c.env.DB.prepare(`
+    SELECT id, name
+    FROM test_identities
+    WHERE deleted_at IS NULL AND expires_at <= ?
+  `).bind(now).all().catch(() => ({ results: [] }));
+  for (const row of expired.results || []) {
+    const tombstoneName = `${row.name}__deleted__${String(row.id).slice(-8)}__${Date.now()}`;
+    await c.env.DB.prepare(`
+      UPDATE test_identities
+      SET name = ?, status = 'deleted', deleted_at = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(tombstoneName, now, now, row.id).run().catch(() => null);
+    await c.env.DB.prepare(`
+      UPDATE test_sessions
+      SET status = 'revoked', revoked_at = ?
+      WHERE test_identity_id = ? AND revoked_at IS NULL
+    `).bind(now, row.id).run().catch(() => null);
+  }
+}
+
+async function getActiveTestSecret(c: any, id: string) {
+  const row: any = await c.env.DB.prepare(`
+    SELECT secret_prefix, secret_cipher
+    FROM test_identity_secrets
+    WHERE test_identity_id = ? AND status = 'active'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).bind(id).first();
+  const secret = await decryptTestSecret(c, row?.secret_cipher);
+  return { secret, secret_prefix: row?.secret_prefix || null };
+}
+
 async function revokeSession(c: any, sessionId: string) {
   await c.env.DB.prepare(
     'UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE session_id = ? AND revoked_at IS NULL'
@@ -728,6 +1018,159 @@ app.get('/api/session', async (c) => {
   return c.json({ active: true, user: activeSession.payload, token: activeSession.token });
 });
 
+app.post('/api/test-auth/exchange', async (c) => {
+  let identity: any = null;
+  let targetSubapp = '';
+  try {
+    const body = await c.req.json();
+    const name = normalizeTestName(body?.name);
+    const secret = String(body?.secret || '').trim();
+    targetSubapp = String(body?.target_subapp || '').trim();
+    if (!name || !secret || !targetSubapp) {
+      await writeTestAudit(c, { eventType: 'exchange_failed', targetSubapp, success: false, detail: { reason: 'missing_fields', name } });
+      return c.json({ ok: false, error: 'Invalid test identity credentials' }, 400);
+    }
+
+    identity = await c.env.DB.prepare(`
+      SELECT ti.*, tis.id AS secret_id, tis.secret_hash, tis.secret_prefix, tis.status AS secret_status
+      FROM test_identities ti
+      JOIN test_identity_secrets tis ON tis.test_identity_id = ti.id AND tis.status = 'active'
+      WHERE ti.name = ? AND ti.deleted_at IS NULL
+      ORDER BY tis.created_at DESC
+      LIMIT 1
+    `).bind(name).first();
+
+    const secretHash = await hashTestSecret(secret);
+    if (!identity || identity.secret_hash !== secretHash) {
+      await writeTestAudit(c, { testIdentityId: identity?.id, eventType: 'exchange_failed', targetSubapp, success: false, detail: { reason: 'bad_secret', name } });
+      return c.json({ ok: false, error: 'Invalid test identity credentials' }, 401);
+    }
+    if (identity.status !== 'active' || identity.disabled_at || Date.parse(identity.expires_at) <= Date.now()) {
+      await writeTestAudit(c, { testIdentityId: identity.id, eventType: 'exchange_failed', targetSubapp, success: false, detail: { reason: 'inactive_or_expired' } });
+      return c.json({ ok: false, error: 'Test identity is not active' }, 403);
+    }
+    if (!testIdentityAllowsSubapp(identity, targetSubapp)) {
+      await writeTestAudit(c, { testIdentityId: identity.id, eventType: 'access_denied', targetSubapp, success: false, detail: { reason: 'subapp_not_allowed' } });
+      return c.json({ ok: false, error: 'Target subapp is not allowed' }, 403);
+    }
+    if (!requestIpAllowed(c, identity)) {
+      await writeTestAudit(c, { testIdentityId: identity.id, eventType: 'exchange_failed', targetSubapp, success: false, detail: { reason: 'ip_not_allowed' } });
+      return c.json({ ok: false, error: 'Source IP is not allowed' }, 403);
+    }
+
+    const token = randomToken('ott_');
+    const tokenHash = await hashTestToken(token);
+    const tokenTtl = Math.max(15, Math.min(600, Number(identity.one_time_token_ttl_seconds || 60)));
+    const expiresAt = new Date(Date.now() + tokenTtl * 1000).toISOString();
+    await c.env.DB.prepare(`
+      INSERT INTO test_one_time_tokens (id, test_identity_id, token_hash, target_subapp, expires_at, created_at, ip_hash, user_agent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      identity.id,
+      tokenHash,
+      targetSubapp,
+      expiresAt,
+      new Date().toISOString(),
+      await sha256Hex(getClientIp(c)),
+      c.req.header('User-Agent') || null
+    ).run();
+    await c.env.DB.prepare('UPDATE test_identity_secrets SET last_used_at = ? WHERE id = ?').bind(new Date().toISOString(), identity.secret_id).run();
+    await writeTestAudit(c, { testIdentityId: identity.id, eventType: 'exchange_success', targetSubapp, success: true });
+
+    return c.json({
+      ok: true,
+      login_url: `${getRequestOrigin(c)}/test-session/consume?token=${encodeURIComponent(token)}`,
+      one_time_token_expires_in: tokenTtl,
+      test_session_ttl_minutes: Number(identity.session_ttl_minutes || 30),
+      target_subapp: targetSubapp,
+    });
+  } catch (e: any) {
+    await writeTestAudit(c, { testIdentityId: identity?.id, eventType: 'exchange_failed', targetSubapp, success: false, detail: { reason: e.message || 'unknown' } });
+    return c.json({ ok: false, error: 'Unable to exchange test identity secret' }, 400);
+  }
+});
+
+app.get('/test-session/consume', async (c) => {
+  const token = String(c.req.query('token') || '').trim();
+  if (!token) return c.text('Missing test login token', 400);
+
+  const tokenHash = await hashTestToken(token);
+  const tokenRow: any = await c.env.DB.prepare(`
+    SELECT
+      tot.id AS token_id,
+      tot.test_identity_id,
+      tot.token_hash,
+      tot.target_subapp,
+      tot.expires_at AS token_expires_at,
+      tot.consumed_at,
+      ti.id,
+      ti.name,
+      ti.display_name,
+      ti.role,
+      ti.status,
+      ti.allowed_subapps,
+      ti.target_default_subapp,
+      ti.data_scope,
+      ti.session_ttl_minutes,
+      ti.one_time_token_ttl_seconds,
+      ti.max_api_calls_per_session,
+      ti.allowed_ip_ranges,
+      ti.expires_at AS identity_expires_at,
+      ti.disabled_at,
+      ti.deleted_at
+    FROM test_one_time_tokens tot
+    JOIN test_identities ti ON ti.id = tot.test_identity_id
+    WHERE tot.token_hash = ?
+    LIMIT 1
+  `).bind(tokenHash).first();
+
+  if (!tokenRow || tokenRow.consumed_at || Date.parse(tokenRow.token_expires_at) <= Date.now()) {
+    await writeTestAudit(c, { testIdentityId: tokenRow?.test_identity_id, eventType: 'consume_failed', targetSubapp: tokenRow?.target_subapp, success: false, detail: { reason: 'invalid_or_expired_token' } });
+    return c.text('This test login URL is invalid or expired.', 400);
+  }
+  if (tokenRow.status !== 'active' || tokenRow.disabled_at || tokenRow.deleted_at || Date.parse(tokenRow.identity_expires_at) <= Date.now()) {
+    await writeTestAudit(c, { testIdentityId: tokenRow.test_identity_id, eventType: 'consume_failed', targetSubapp: tokenRow.target_subapp, success: false, detail: { reason: 'identity_inactive_or_expired' } });
+    return c.text('This test identity is not active.', 403);
+  }
+  if (!testIdentityAllowsSubapp(tokenRow, tokenRow.target_subapp)) {
+    await writeTestAudit(c, { testIdentityId: tokenRow.test_identity_id, eventType: 'access_denied', targetSubapp: tokenRow.target_subapp, success: false, detail: { reason: 'subapp_not_allowed_at_consume' } });
+    return c.text('Target subapp is not allowed.', 403);
+  }
+
+  const sessionId = crypto.randomUUID();
+  const sessionTtlMinutes = Math.max(5, Math.min(1440, Number(tokenRow.session_ttl_minutes || 30)));
+  const sessionExpiresAt = new Date(Date.now() + sessionTtlMinutes * 60 * 1000).toISOString();
+  const jwtId = crypto.randomUUID();
+  const payload = buildTestJwtPayload(c, tokenRow, sessionId, tokenRow.target_subapp);
+  const jwtToken = await generateJWT({ ...payload, jti: jwtId }, c.env.JWT_SECRET, sessionTtlMinutes / (24 * 60));
+
+  await c.env.DB.prepare('UPDATE test_one_time_tokens SET consumed_at = ? WHERE id = ?').bind(new Date().toISOString(), tokenRow.token_id).run();
+  await c.env.DB.prepare(`
+    INSERT INTO test_sessions (id, test_identity_id, target_subapp, session_token_hash, jwt_id, status, created_at, expires_at, ip_hash, user_agent)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+  `).bind(
+    sessionId,
+    tokenRow.test_identity_id,
+    tokenRow.target_subapp,
+    await sha256Hex(jwtToken),
+    jwtId,
+    new Date().toISOString(),
+    sessionExpiresAt,
+    await sha256Hex(getClientIp(c)),
+    c.req.header('User-Agent') || null
+  ).run();
+  await writeTestAudit(c, { testIdentityId: tokenRow.test_identity_id, eventType: 'consume_success', targetSubapp: tokenRow.target_subapp, success: true, detail: { session_id: sessionId } });
+
+  setUserSessionCookie(c, jwtToken, sessionTtlMinutes * 60);
+
+  const appRecord: any = await c.env.DB.prepare('SELECT app_id, callback_url FROM apps WHERE app_id = ?').bind(tokenRow.target_subapp).first();
+  const fallback = `${getRequestOrigin(c)}/dev/@${encodeURIComponent(tokenRow.name)}`;
+  const redirectBase = appRecord?.callback_url || fallback;
+  const separator = redirectBase.includes('?') ? '&' : '?';
+  return c.redirect(`${redirectBase}${separator}token=${encodeURIComponent(jwtToken)}&identity_type=test`);
+});
+
 app.get('/api/user/session', async (c) => {
   const activeSession = await authenticateCookieSession(c);
   if (!activeSession) return c.json({ error: 'Authentication required' }, 401);
@@ -1001,6 +1444,28 @@ app.get('/api/verify', async (c) => {
       return c.json({ valid: true, user: payload });
     }
 
+    if (payload.identity_type === 'test' || payload.test_session === true) {
+      const identityId = payload.sub || payload.uuid;
+      const sessionId = payload.session_id;
+      const [identity, session]: any[] = await Promise.all([
+        c.env.DB.prepare('SELECT id, status, allowed_subapps, expires_at, disabled_at, deleted_at FROM test_identities WHERE id = ?').bind(identityId).first(),
+        c.env.DB.prepare('SELECT id, status, expires_at, revoked_at FROM test_sessions WHERE id = ? AND test_identity_id = ?').bind(sessionId, identityId).first(),
+      ]);
+      if (!identity || identity.status !== 'active' || identity.disabled_at || identity.deleted_at || Date.parse(identity.expires_at) <= Date.now()) {
+        await writeTestAudit(c, { testIdentityId: identityId, eventType: 'access_denied', targetSubapp: appId, success: false, detail: { reason: 'identity_inactive' } });
+        return c.json({ error: 'Test identity is inactive' }, 403);
+      }
+      if (!session || session.status !== 'active' || session.revoked_at || Date.parse(session.expires_at) <= Date.now()) {
+        await writeTestAudit(c, { testIdentityId: identityId, eventType: 'access_denied', targetSubapp: appId, success: false, detail: { reason: 'session_inactive' } });
+        return c.json({ error: 'Test session expired' }, 403);
+      }
+      if (appId && !testIdentityAllowsSubapp(identity, appId)) {
+        await writeTestAudit(c, { testIdentityId: identityId, eventType: 'access_denied', targetSubapp: appId, success: false, detail: { reason: 'subapp_not_allowed' } });
+        return c.json({ error: 'No permission for this app' }, 403);
+      }
+      return c.json({ valid: true, user: payload, legacy_subapp_compat: true });
+    }
+
     // Check if user is active in DB (crucial for pause/continue)
     const user: any = await c.env.DB.prepare('SELECT status FROM users WHERE uuid = ?').bind(payload.uuid).first();
     if (!user || user.status !== 'active') {
@@ -1041,6 +1506,27 @@ app.get('/api/quota/check', async (c) => {
   // Admin always has unlimited quota — skip all checks
   if (uuid === 'admin') {
     return c.json({ valid: true, unlimited: true, remaining_tokens: null, remaining_requests: null });
+  }
+
+  const testIdentity: any = await c.env.DB.prepare(
+    'SELECT id, status, allowed_subapps, expires_at, disabled_at, deleted_at, max_api_calls_per_session FROM test_identities WHERE id = ?'
+  ).bind(uuid).first();
+  if (testIdentity) {
+    if (testIdentity.status !== 'active' || testIdentity.disabled_at || testIdentity.deleted_at || Date.parse(testIdentity.expires_at) <= Date.now()) {
+      return c.json({ error: 'Test identity is inactive' }, 403);
+    }
+    if (!testIdentityAllowsSubapp(testIdentity, appId)) {
+      await writeTestAudit(c, { testIdentityId: uuid, eventType: 'access_denied', targetSubapp: appId, success: false, detail: { reason: 'quota_subapp_not_allowed' } });
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return c.json({
+      valid: true,
+      unlimited: testIdentity.max_api_calls_per_session == null,
+      test_session: true,
+      remaining_tokens: null,
+      remaining_requests: null,
+      quota: { max_api_calls_per_session: testIdentity.max_api_calls_per_session },
+    });
   }
 
   const quota: any = await c.env.DB.prepare('SELECT * FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(uuid, appId).first();
@@ -1094,6 +1580,32 @@ app.post('/api/quota/consume', async (c) => {
     return c.json({ success: true });
   }
 
+  const testIdentity: any = await c.env.DB.prepare(
+    'SELECT id, status, allowed_subapps, expires_at, disabled_at, deleted_at FROM test_identities WHERE id = ?'
+  ).bind(uuid).first();
+  if (testIdentity) {
+    if (testIdentity.status !== 'active' || testIdentity.disabled_at || testIdentity.deleted_at || Date.parse(testIdentity.expires_at) <= Date.now() || !testIdentityAllowsSubapp(testIdentity, app_id)) {
+      await writeTestAudit(c, { testIdentityId: uuid, eventType: 'access_denied', targetSubapp: app_id, success: false, detail: { reason: 'quota_consume_denied' } });
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    await c.env.DB.prepare(`
+      INSERT INTO test_api_usage_records (id, test_identity_id, session_id, subapp, api_path, method, amount, status_code, created_at, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      uuid,
+      null,
+      app_id,
+      '/api/quota/consume',
+      'POST',
+      1,
+      200,
+      new Date().toISOString(),
+      JSON.stringify({ tokens })
+    ).run().catch(() => null);
+    return c.json({ success: true, test_session: true });
+  }
+
   await c.env.DB.prepare('UPDATE user_apps SET used_tokens_today = used_tokens_today + ?, used_requests_today = used_requests_today + 1 WHERE uuid = ? AND app_id = ?').bind(tokens, uuid, app_id).run();
 
   c.env.ANALYTICS.writeDataPoint({
@@ -1123,6 +1635,25 @@ app.post('/api/track', async (c) => {
     doubles: [duration_seconds || 0],
     indexes: [app_id]
   });
+
+  const testIdentity: any = await c.env.DB.prepare('SELECT id FROM test_identities WHERE id = ?').bind(uuid).first().catch(() => null);
+  if (testIdentity) {
+    await c.env.DB.prepare(`
+      INSERT INTO test_api_usage_records (id, test_identity_id, session_id, subapp, api_path, method, amount, status_code, created_at, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      uuid,
+      null,
+      app_id,
+      '/api/track',
+      'POST',
+      1,
+      200,
+      new Date().toISOString(),
+      JSON.stringify({ event_type, duration_seconds: duration_seconds || 0 })
+    ).run().catch(() => null);
+  }
 
   return c.json({ success: true });
 });
@@ -1647,7 +2178,7 @@ async function adminAuthGuard(c: any, next: any) {
     try {
       const token = authHeader.split(' ')[1];
       const payload = await verifyJWT(token, c.env.JWT_SECRET);
-      if (payload.role === 'admin') {
+      if (payload.role === 'admin' && payload.identity_type !== 'test' && payload.test_session !== true) {
         return next();
       }
     } catch (e) { }
@@ -1739,6 +2270,274 @@ app.post('/admin/register-codes/bulk-action', async (c) => {
   return c.json({ error: 'Unsupported action' }, 400);
 });
 
+app.get('/api/admin/test-identities', async (c) => {
+  await cleanupExpiredTestIdentities(c);
+  const { results } = await c.env.DB.prepare(`
+    SELECT ti.*,
+           tis.secret_prefix,
+           (SELECT COUNT(*) FROM test_sessions ts WHERE ts.test_identity_id = ti.id AND ts.status = 'active' AND ts.revoked_at IS NULL AND ts.expires_at > ?) AS active_session_count,
+           (SELECT MAX(created_at) FROM test_sessions ts WHERE ts.test_identity_id = ti.id) AS recent_login,
+           (SELECT COALESCE(SUM(amount), 0) FROM test_api_usage_records tu WHERE tu.test_identity_id = ti.id) AS api_call_count
+    FROM test_identities ti
+    LEFT JOIN test_identity_secrets tis ON tis.test_identity_id = ti.id AND tis.status = 'active'
+    WHERE ti.deleted_at IS NULL
+    ORDER BY ti.created_at DESC
+  `).bind(new Date().toISOString()).all();
+  return c.json({ ok: true, test_identities: (results || []).map(normalizeTestIdentityRow) });
+});
+
+app.post('/api/admin/test-identities', async (c) => {
+  try {
+    const body = await c.req.json();
+    const input = normalizeTestIdentityInput(body);
+    const existing: any = await c.env.DB.prepare('SELECT id, status FROM test_identities WHERE name = ? AND deleted_at IS NULL').bind(input.name).first();
+    if (existing) {
+      return c.json({ ok: false, error: `测试身份 name 已存在：${input.name}` }, 409);
+    }
+    const deletedBlockers: any = await c.env.DB.prepare('SELECT id, name FROM test_identities WHERE name = ? AND deleted_at IS NOT NULL').bind(input.name).all();
+    for (const row of deletedBlockers.results || []) {
+      const tombstoneName = `${row.name}__deleted__${String(row.id).slice(-8)}__${Date.now()}`;
+      await c.env.DB.prepare('UPDATE test_identities SET name = ?, updated_at = ? WHERE id = ?').bind(tombstoneName, new Date().toISOString(), row.id).run();
+    }
+    const id = `test_${crypto.randomUUID()}`;
+    const secret = randomToken('sk_test_');
+    const secretHash = await hashTestSecret(secret);
+    const secretCipher = await encryptTestSecret(c, secret);
+    const secretPrefix = `${secret.slice(0, 15)}****`;
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(`
+      INSERT INTO test_identities (
+        id, name, display_name, role, status, allowed_subapps, target_default_subapp, data_scope,
+        session_ttl_minutes, one_time_token_ttl_seconds, max_api_calls_per_session,
+        allowed_ip_ranges, expires_at, created_by, created_at, updated_at, notes
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      input.name,
+      input.display_name,
+      input.role,
+      JSON.stringify(input.allowed_subapps),
+      input.target_default_subapp,
+      input.data_scope,
+      input.session_ttl_minutes,
+      input.one_time_token_ttl_seconds,
+      input.max_api_calls_per_session,
+      JSON.stringify(input.allowed_ip_ranges),
+      input.expires_at,
+      c.env.ADMIN_USERNAME || 'admin',
+      now,
+      now,
+      input.notes
+    ).run();
+
+    await c.env.DB.prepare(`
+      INSERT INTO test_identity_secrets (id, test_identity_id, secret_hash, secret_cipher, secret_prefix, version, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, 'active', ?)
+    `).bind(crypto.randomUUID(), id, secretHash, secretCipher, secretPrefix, now).run();
+    const row = normalizeTestIdentityRow({ ...input, id, status: 'active', secret_prefix: secretPrefix, created_at: now, updated_at: now, created_by: c.env.ADMIN_USERNAME || 'admin' });
+    await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_create_test_identity', targetSubapp: input.target_default_subapp, success: true, detail: { risk_reasons: getTestIdentityRiskReasons(input) } });
+
+    return c.json({
+      ok: true,
+      test_identity: row,
+      secret,
+      secret_prefix: secretPrefix,
+      agent_command: buildTestAgentCommand(c, row, secret),
+      risk_reasons: getTestIdentityRiskReasons(input),
+    });
+  } catch (e: any) {
+    if (String(e?.message || '').includes('UNIQUE constraint failed: test_identities.name')) {
+      return c.json({ ok: false, error: '测试身份 name 已存在，请换一个 name。' }, 409);
+    }
+    return c.json({ ok: false, error: e.message || 'Unable to create test identity' }, 400);
+  }
+});
+
+app.get('/api/admin/test-identities/by-name/:name', async (c) => {
+  await cleanupExpiredTestIdentities(c);
+  const name = normalizeTestName(c.req.param('name'));
+  const row: any = await c.env.DB.prepare(`
+    SELECT ti.*, tis.secret_prefix
+    FROM test_identities ti
+    LEFT JOIN test_identity_secrets tis ON tis.test_identity_id = ti.id AND tis.status = 'active'
+    WHERE ti.name = ? AND ti.deleted_at IS NULL
+  `).bind(name).first();
+  if (!row) return c.json({ error: 'Test identity not found' }, 404);
+  const identity = normalizeTestIdentityRow(row);
+  const secretInfo = await getActiveTestSecret(c, row.id);
+  return c.json({
+    ok: true,
+    test_identity: identity,
+    activity: await getTestActivity(c, row.id),
+    secret: secretInfo.secret,
+    secret_prefix: secretInfo.secret_prefix,
+    agent_command: secretInfo.secret ? buildTestAgentCommand(c, identity, secretInfo.secret) : null,
+  });
+});
+
+app.get('/api/admin/test-identities/:id/activity', async (c) => {
+  const id = c.req.param('id');
+  const identity: any = await c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!identity) return c.json({ error: 'Test identity not found' }, 404);
+  const secretInfo = await getActiveTestSecret(c, id);
+  return c.json({
+    ok: true,
+    activity: await getTestActivity(c, id),
+    secret: secretInfo.secret,
+    secret_prefix: secretInfo.secret_prefix,
+    agent_command: identity && secretInfo.secret ? buildTestAgentCommand(c, normalizeTestIdentityRow(identity), secretInfo.secret) : null,
+  });
+});
+
+app.put('/api/admin/test-identities/:id', async (c) => {
+  const id = c.req.param('id');
+  const identity: any = await c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!identity) return c.json({ error: 'Test identity not found' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const nextAllowedSubapps = parseJsonArrayField(body?.allowed_subapps ?? identity.allowed_subapps);
+  if (!nextAllowedSubapps.length) return c.json({ error: 'Allowed subapps is required' }, 400);
+  const nextDataScope = TEST_DATA_SCOPES.has(String(body?.data_scope || identity.data_scope))
+    ? String(body?.data_scope || identity.data_scope)
+    : String(identity.data_scope || 'public_read');
+  const nextRole = TEST_ROLES.has(String(body?.role || identity.role))
+    ? String(body?.role || identity.role)
+    : String(identity.role || 'user');
+  const nextTarget = String(body?.target_default_subapp || identity.target_default_subapp || nextAllowedSubapps[0] || '').trim() || null;
+  const nextApiLimit = normalizeLimitValue(body?.max_api_calls_per_session ?? identity.max_api_calls_per_session);
+  const input = {
+    ...normalizeTestIdentityRow(identity),
+    role: nextRole,
+    data_scope: nextDataScope,
+    allowed_subapps: nextAllowedSubapps,
+    target_default_subapp: nextTarget,
+    max_api_calls_per_session: nextApiLimit,
+  };
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(`
+    UPDATE test_identities
+    SET role = ?, allowed_subapps = ?, target_default_subapp = ?, data_scope = ?, max_api_calls_per_session = ?, updated_at = ?
+    WHERE id = ? AND deleted_at IS NULL
+  `).bind(
+    nextRole,
+    JSON.stringify(nextAllowedSubapps),
+    nextTarget,
+    nextDataScope,
+    nextApiLimit,
+    now,
+    id
+  ).run();
+  await writeTestAudit(c, {
+    testIdentityId: id,
+    eventType: 'admin_update_test_identity',
+    targetSubapp: nextTarget || undefined,
+    success: true,
+    detail: { risk_reasons: getTestIdentityRiskReasons(input), fields: ['role', 'allowed_subapps', 'target_default_subapp', 'data_scope', 'max_api_calls_per_session'] },
+  });
+  const row: any = await c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ?').bind(id).first();
+  return c.json({ ok: true, test_identity: normalizeTestIdentityRow(row), risk_reasons: getTestIdentityRiskReasons(input) });
+});
+
+app.post('/api/admin/test-identities/:id/rotate-secret', async (c) => {
+  const id = c.req.param('id');
+  const identity: any = await c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!identity) return c.json({ error: 'Test identity not found' }, 404);
+  const latest: any = await c.env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM test_identity_secrets WHERE test_identity_id = ?').bind(id).first();
+  const secret = randomToken('sk_test_');
+  const secretPrefix = `${secret.slice(0, 15)}****`;
+  const secretCipher = await encryptTestSecret(c, secret);
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("UPDATE test_identity_secrets SET status = 'revoked', revoked_at = ?, rotated_at = ? WHERE test_identity_id = ? AND status = 'active'").bind(now, now, id).run();
+  await c.env.DB.prepare(`
+    INSERT INTO test_identity_secrets (id, test_identity_id, secret_hash, secret_cipher, secret_prefix, version, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+  `).bind(crypto.randomUUID(), id, await hashTestSecret(secret), secretCipher, secretPrefix, Number(latest?.version || 0) + 1, now).run();
+  await c.env.DB.prepare('UPDATE test_identities SET updated_at = ? WHERE id = ?').bind(now, id).run();
+  await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_rotate_test_secret', targetSubapp: identity.target_default_subapp, success: true });
+  const normalized = normalizeTestIdentityRow({ ...identity, secret_prefix: secretPrefix });
+  return c.json({ ok: true, secret, secret_prefix: secretPrefix, agent_command: buildTestAgentCommand(c, normalized, secret) });
+});
+
+app.post('/api/admin/test-identities/:id/disable', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("UPDATE test_identities SET status = 'disabled', disabled_at = ?, updated_at = ? WHERE id = ?").bind(now, now, id).run();
+  await c.env.DB.prepare("UPDATE test_sessions SET status = 'revoked', revoked_at = ? WHERE test_identity_id = ? AND revoked_at IS NULL").bind(now, id).run();
+  await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_disable_test_identity', success: true });
+  return c.json({ ok: true });
+});
+
+app.post('/api/admin/test-identities/:id/enable', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+  const identity: any = await c.env.DB.prepare('SELECT expires_at FROM test_identities WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!identity) return c.json({ error: 'Test identity not found' }, 404);
+  if (Date.parse(identity.expires_at) <= Date.now()) {
+    await cleanupExpiredTestIdentities(c);
+    return c.json({ error: '测试身份已过期并删除' }, 410);
+  }
+  await c.env.DB.prepare("UPDATE test_identities SET status = 'active', disabled_at = NULL, updated_at = ? WHERE id = ?").bind(now, id).run();
+  await c.env.DB.prepare(`
+    UPDATE test_identity_secrets
+    SET status = 'active', revoked_at = NULL
+    WHERE id = (
+      SELECT id FROM test_identity_secrets
+      WHERE test_identity_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    )
+  `).bind(id).run();
+  await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_enable_test_identity', success: true });
+  return c.json({ ok: true });
+});
+
+app.post('/api/admin/test-identities/:id/revoke-sessions', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("UPDATE test_sessions SET status = 'revoked', revoked_at = ? WHERE test_identity_id = ? AND revoked_at IS NULL").bind(now, id).run();
+  await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_revoke_test_sessions', success: true });
+  return c.json({ ok: true });
+});
+
+app.delete('/api/admin/test-identities/:id', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+  const row: any = await c.env.DB.prepare('SELECT name FROM test_identities WHERE id = ?').bind(id).first();
+  const tombstoneName = row?.name ? `${row.name}__deleted__${String(id).slice(-8)}__${Date.now()}` : null;
+  await c.env.DB.prepare("UPDATE test_identities SET name = COALESCE(?, name), status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?").bind(tombstoneName, now, now, id).run();
+  await c.env.DB.prepare("UPDATE test_sessions SET status = 'revoked', revoked_at = ? WHERE test_identity_id = ? AND revoked_at IS NULL").bind(now, id).run();
+  await c.env.DB.prepare("UPDATE test_identity_secrets SET status = 'revoked', revoked_at = ? WHERE test_identity_id = ? AND status = 'active'").bind(now, id).run();
+  await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_delete_test_identity', success: true });
+  return c.json({ ok: true });
+});
+
+app.post('/api/test-auth/usage', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const appId = String(body?.subapp || body?.app_id || '').trim();
+  const identityId = String(body?.test_identity_id || body?.uuid || '').trim();
+  const authHeader = c.req.header('Authorization');
+  const secret = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
+  if (!appId || !identityId || !secret) return c.json({ error: 'Missing fields' }, 400);
+  const appRecord: any = await c.env.DB.prepare('SELECT secret_key FROM apps WHERE app_id = ?').bind(appId).first();
+  if (!appRecord || appRecord.secret_key !== secret) return c.json({ error: 'Unauthorized' }, 401);
+  await c.env.DB.prepare(`
+    INSERT INTO test_api_usage_records (id, test_identity_id, session_id, subapp, api_path, method, amount, status_code, created_at, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    crypto.randomUUID(),
+    identityId,
+    body?.session_id || null,
+    appId,
+    body?.api_path || null,
+    body?.method || null,
+    Math.max(1, Number(body?.amount || 1)),
+    body?.status_code == null ? null : Number(body.status_code),
+    new Date().toISOString(),
+    body?.metadata === undefined ? null : JSON.stringify(body.metadata)
+  ).run();
+  return c.json({ ok: true });
+});
+
 // Users CRUD
 app.get('/admin/users', async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -1749,6 +2548,8 @@ app.get('/admin/users', async (c) => {
 
 app.post('/admin/users', async (c) => {
   const { username, name, password, cookie_expiry_days = 7, birthday = null, avatar_data = null } = await c.req.json();
+  const existingUser: any = await c.env.DB.prepare('SELECT uuid FROM users WHERE lower(username) = lower(?)').bind(username).first();
+  if (existingUser) return c.json({ error: 'Username already exists' }, 409);
   const uuid = crypto.randomUUID();
   const salt = generateSalt();
   const hash = await hashPassword(password, salt);
@@ -1809,8 +2610,12 @@ app.delete('/admin/users/:uuid', async (c) => {
   const uuid = c.req.param('uuid');
   const user: any = await c.env.DB.prepare('SELECT avatar_key FROM users WHERE uuid = ?').bind(uuid).first();
   await deleteAvatarIfPresent(c, user?.avatar_key);
-  await c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid).run();
+  await c.env.DB.prepare('DELETE FROM user_apps WHERE uuid = ?').bind(uuid).run().catch(() => null);
+  await c.env.DB.prepare('DELETE FROM user_sessions WHERE uuid = ?').bind(uuid).run().catch(() => null);
+  await c.env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(uuid).run().catch(() => null);
+  await c.env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(uuid).run().catch(() => null);
   await c.env.DB.prepare('DELETE FROM passkeys WHERE uuid = ?').bind(uuid).run();
+  await c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid).run();
   return c.json({ success: true });
 });
 
@@ -1836,6 +2641,8 @@ app.get('/admin/apps', async (c) => {
 app.post('/admin/apps', async (c) => {
   const { app_id, app_name, callback_url, secret_key, use_agent_limit } = await c.req.json();
   try {
+    const existingApp: any = await c.env.DB.prepare('SELECT app_id FROM apps WHERE app_id = ?').bind(app_id).first();
+    if (existingApp) return c.json({ error: 'App ID already exists' }, 409);
     await c.env.DB.prepare(
       'INSERT INTO apps (app_id, app_name, callback_url, secret_key, use_agent_limit) VALUES (?, ?, ?, ?, ?)'
     ).bind(app_id, app_name, callback_url, secret_key, use_agent_limit ? 1 : 0).run();
@@ -1856,6 +2663,8 @@ app.put('/admin/apps/:app_id', async (c) => {
 
 app.delete('/admin/apps/:app_id', async (c) => {
   const appId = c.req.param('app_id');
+  await c.env.DB.prepare('DELETE FROM user_apps WHERE app_id = ?').bind(appId).run().catch(() => null);
+  await c.env.DB.prepare('DELETE FROM test_api_usage_records WHERE subapp = ?').bind(appId).run().catch(() => null);
   await c.env.DB.prepare('DELETE FROM apps WHERE app_id = ?').bind(appId).run();
   return c.json({ success: true });
 });

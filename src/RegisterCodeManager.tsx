@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { CheckSquare, Copy, MoreVertical, PauseCircle, PlayCircle, Square, Ticket, Trash2, X } from 'lucide-react';
 
@@ -25,6 +26,194 @@ type RegisterTemplateState = {
   daily_token_limit: string;
 };
 
+function useBodyScrollLock(active: boolean) {
+  React.useEffect(() => {
+    if (!active || typeof window === 'undefined') return;
+    const scrollY = window.scrollY;
+    const bodyStyle = document.body.style;
+    const htmlStyle = document.documentElement.style;
+    const previous = {
+      bodyOverflow: bodyStyle.overflow,
+      bodyPosition: bodyStyle.position,
+      bodyTop: bodyStyle.top,
+      bodyLeft: bodyStyle.left,
+      bodyRight: bodyStyle.right,
+      bodyWidth: bodyStyle.width,
+      bodyOverscroll: bodyStyle.overscrollBehavior,
+      htmlOverflow: htmlStyle.overflow,
+      htmlOverscroll: htmlStyle.overscrollBehavior,
+    };
+    bodyStyle.overflow = 'hidden';
+    bodyStyle.position = 'fixed';
+    bodyStyle.top = `-${scrollY}px`;
+    bodyStyle.left = '0';
+    bodyStyle.right = '0';
+    bodyStyle.width = '100%';
+    bodyStyle.overscrollBehavior = 'none';
+    htmlStyle.overflow = 'hidden';
+    htmlStyle.overscrollBehavior = 'none';
+    return () => {
+      bodyStyle.overflow = previous.bodyOverflow;
+      bodyStyle.position = previous.bodyPosition;
+      bodyStyle.top = previous.bodyTop;
+      bodyStyle.left = previous.bodyLeft;
+      bodyStyle.right = previous.bodyRight;
+      bodyStyle.width = previous.bodyWidth;
+      bodyStyle.overscrollBehavior = previous.bodyOverscroll;
+      htmlStyle.overflow = previous.htmlOverflow;
+      htmlStyle.overscrollBehavior = previous.htmlOverscroll;
+      window.scrollTo(0, scrollY);
+    };
+  }, [active]);
+}
+
+function getPortalTheme() {
+  if (typeof document === 'undefined') return 'light';
+  return document.querySelector('.dashboard-theme')?.getAttribute('data-theme') || 'light';
+}
+
+function parseRecordConfig(record: RegisterCodeRecord): any {
+  try {
+    return JSON.parse(record.config_json || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function openRegisterCodeDetails(record: RegisterCodeRecord) {
+  if (typeof document === 'undefined') return;
+  document.getElementById('register-code-detail-portal')?.remove();
+
+  const config = parseRecordConfig(record);
+  const permissions = Array.isArray(config.permissions) ? config.permissions : [];
+  const scrollY = window.scrollY;
+  const previous = {
+    bodyOverflow: document.body.style.overflow,
+    bodyPosition: document.body.style.position,
+    bodyTop: document.body.style.top,
+    bodyLeft: document.body.style.left,
+    bodyRight: document.body.style.right,
+    bodyWidth: document.body.style.width,
+    htmlOverflow: document.documentElement.style.overflow,
+  };
+
+  let closing = false;
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    overlay.classList.remove('opacity-100');
+    overlay.classList.add('opacity-0');
+    panel.classList.remove('translate-y-0', 'scale-100', 'opacity-100');
+    panel.classList.add('translate-y-3', 'scale-[0.98]', 'opacity-0');
+    window.setTimeout(() => {
+      overlay.remove();
+      document.body.style.overflow = previous.bodyOverflow;
+      document.body.style.position = previous.bodyPosition;
+      document.body.style.top = previous.bodyTop;
+      document.body.style.left = previous.bodyLeft;
+      document.body.style.right = previous.bodyRight;
+      document.body.style.width = previous.bodyWidth;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    }, 180);
+  };
+
+  document.body.style.overflow = 'hidden';
+  document.body.style.position = 'fixed';
+  document.body.style.top = `-${scrollY}px`;
+  document.body.style.left = '0';
+  document.body.style.right = '0';
+  document.body.style.width = '100%';
+  document.documentElement.style.overflow = 'hidden';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'register-code-detail-portal';
+  overlay.setAttribute('data-theme', getPortalTheme());
+  overlay.className = 'dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center overscroll-none bg-black/45 p-2 opacity-0 backdrop-blur-sm transition-opacity duration-200 ease-out md:items-center md:p-4';
+  overlay.addEventListener('mousedown', (event) => {
+    if (event.target === overlay) close();
+  });
+
+  const panel = document.createElement('div');
+  panel.className = 'relative max-h-[94dvh] w-full max-w-2xl translate-y-3 scale-[0.98] overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] opacity-0 shadow-[var(--shadow-overlay)] transition duration-200 ease-out md:rounded-[var(--radius-xl)]';
+
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'absolute right-4 top-4 z-30 grid h-10 w-10 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] shadow-lg transition-colors hover:text-[var(--text-primary)]';
+  closeButton.setAttribute('aria-label', 'Close');
+  closeButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>';
+  closeButton.addEventListener('click', close);
+
+  const scroll = document.createElement('div');
+  scroll.className = 'ui-modal-scroll max-h-[94dvh] touch-pan-y overscroll-contain overflow-y-auto p-6 pb-8 pt-16';
+
+  const label = document.createElement('p');
+  label.className = 'text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]';
+  label.textContent = 'Register Code Details';
+  const title = document.createElement('h3');
+  title.className = 'mt-2 break-all text-xl font-semibold text-[var(--text-primary)]';
+  title.textContent = record.code;
+  const subtitle = document.createElement('p');
+  subtitle.className = 'mt-2 text-sm text-[var(--text-secondary)]';
+  subtitle.textContent = record.template_name || 'Untitled template';
+  scroll.append(label, title, subtitle);
+
+  const grid = document.createElement('div');
+  grid.className = 'mt-6 grid gap-4 md:grid-cols-2';
+  const addCard = (heading: string, value: string) => {
+    const card = document.createElement('div');
+    card.className = 'ui-card-subtle p-4';
+    const h = document.createElement('p');
+    h.className = 'text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]';
+    h.textContent = heading;
+    const v = document.createElement('p');
+    v.className = 'mt-2 break-words text-sm text-[var(--text-primary)]';
+    v.textContent = value;
+    card.append(h, v);
+    grid.append(card);
+  };
+  addCard('Status', record.status);
+  addCard('Cookie Expiry', `${config.cookie_expiry_days || 7} days`);
+  addCard('Used By', record.used_by_username || 'Not used yet');
+  scroll.append(grid);
+
+  const permissionsTitle = document.createElement('p');
+  permissionsTitle.className = 'mt-6 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]';
+  permissionsTitle.textContent = 'App Permissions';
+  const permissionsList = document.createElement('div');
+  permissionsList.className = 'mt-3 space-y-3';
+  if (permissions.length) {
+    for (const permission of permissions) {
+      const item = document.createElement('div');
+      item.className = 'ui-card-subtle p-4';
+      const app = document.createElement('p');
+      app.className = 'break-all text-sm font-semibold text-[var(--text-primary)]';
+      app.textContent = String(permission.app_id || 'Unknown app');
+      const quota = document.createElement('p');
+      quota.className = 'mt-1 text-xs text-[var(--text-secondary)]';
+      quota.textContent = `RPM ${permission.rpm_limit || 'unlimited'} / RPD ${permission.rpd_limit || 'unlimited'} / Tokens ${permission.daily_token_limit || 'unlimited'}`;
+      item.append(app, quota);
+      permissionsList.append(item);
+    }
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'ui-card-subtle p-4 text-sm text-[var(--text-secondary)]';
+    empty.textContent = 'No app permissions are attached to this register code.';
+    permissionsList.append(empty);
+  }
+  scroll.append(permissionsTitle, permissionsList);
+
+  panel.append(closeButton, scroll);
+  overlay.append(panel);
+  document.body.append(overlay);
+  window.requestAnimationFrame(() => {
+    overlay.classList.remove('opacity-0');
+    overlay.classList.add('opacity-100');
+    panel.classList.remove('translate-y-3', 'scale-[0.98]', 'opacity-0');
+    panel.classList.add('translate-y-0', 'scale-100', 'opacity-100');
+  });
+}
+
 export default function RegisterCodeManager({
   authFetch,
   apps,
@@ -47,6 +236,12 @@ export default function RegisterCodeManager({
   const [defaultState, setDefaultState] = React.useState<Record<string, RegisterTemplateState>>({});
   const [defaultCookieExpiryDays, setDefaultCookieExpiryDays] = React.useState('7');
   const [externalRegistrationEnabled, setExternalRegistrationEnabled] = React.useState(true);
+  const codesRef = React.useRef<RegisterCodeRecord[]>([]);
+  useBodyScrollLock(Boolean(detailCode));
+
+  React.useEffect(() => {
+    codesRef.current = codes;
+  }, [codes]);
 
   React.useEffect(() => {
     setTemplateState((current) => {
@@ -109,6 +304,26 @@ export default function RegisterCodeManager({
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [menuCode]);
+
+  React.useEffect(() => {
+    const handleOpenDetails = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target || target.closest('[data-register-code-ignore]')) return;
+      const opener = target.closest('[data-register-code-open]') as HTMLElement | null;
+      if (!opener) return;
+      const code = opener.getAttribute('data-register-code-open');
+      const record = codesRef.current.find((item) => item.code === code);
+      if (!record) return;
+      event.preventDefault();
+      window.setTimeout(() => openRegisterCodeDetails(record), 0);
+    };
+
+    document.addEventListener('click', handleOpenDetails, true);
+    return () => {
+      document.removeEventListener('click', handleOpenDetails, true);
+      document.getElementById('register-code-detail-portal')?.remove();
+    };
+  }, []);
 
   const allSelected = codes.length > 0 && selectedCodes.length === codes.length;
 
@@ -458,13 +673,33 @@ export default function RegisterCodeManager({
               const parsedConfig = parseConfig(record);
               const isSelected = selectedCodes.includes(record.code);
               return (
-                <div key={record.code} className="relative border-b border-[var(--border)] px-4 py-0 md:px-4">
+                <div
+                  key={record.code}
+                  data-register-code-open={record.code}
+                  className="relative cursor-pointer border-b border-[var(--border)] px-4 py-0 transition-colors hover:bg-[var(--surface-soft)] md:px-4"
+                  onClick={() => openRegisterCodeDetails(record)}
+                >
                   <div className="flex min-h-[56px] flex-col gap-3 py-3 md:flex-row md:items-center md:gap-0 md:py-0">
-                    <button type="button" onClick={() => toggleSingle(record.code)} className="mr-4 flex h-6 w-6 items-center justify-center self-start md:h-[56px] md:self-auto" aria-label={`Select ${record.code}`}>
+                    <button
+                      type="button"
+                      data-register-code-ignore
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleSingle(record.code);
+                      }}
+                      className="mr-4 flex h-6 w-6 items-center justify-center self-start md:h-[56px] md:self-auto"
+                      aria-label={`Select ${record.code}`}
+                    >
                       {isSelected ? <CheckSquare className="h-5 w-5 text-[var(--primary)]" /> : <Square className="h-5 w-5 text-[var(--text-tertiary)]" />}
                     </button>
 
-                    <button type="button" onClick={() => setDetailCode(record)} className="flex min-h-[40px] flex-1 items-center text-left">
+                    <button
+                      type="button"
+                      data-register-code-open={record.code}
+                      onClick={() => openRegisterCodeDetails(record)}
+                      className="flex min-h-[40px] flex-1 items-center text-left"
+                    >
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate text-[15px] font-medium text-[var(--text-primary)] md:text-[16px]">{record.code}</span>
@@ -485,7 +720,13 @@ export default function RegisterCodeManager({
                     <div className="hidden w-40 items-center text-sm text-[var(--text-secondary)] md:flex">{record.template_name || 'Untitled'}</div>
                     <div className="hidden w-44 items-center truncate text-sm text-[var(--text-secondary)] md:flex">{record.used_by_username || 'Not used yet'}</div>
 
-                    <div className="relative flex items-center justify-end md:w-12" data-register-menu-root={record.code}>
+                    <div
+                      className="relative flex items-center justify-end md:w-12"
+                      data-register-menu-root={record.code}
+                      data-register-code-ignore
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       <button type="button" className="ui-icon-button" onClick={() => setMenuCode((current) => current === record.code ? '' : record.code)} aria-label={`More actions for ${record.code}`}>
                         <MoreVertical className="h-4 w-4" />
                       </button>
@@ -517,33 +758,37 @@ export default function RegisterCodeManager({
       </div>
 
       <AnimatePresence>
-        {detailCode ? (
+        {detailCode && typeof document !== 'undefined' ? createPortal(
           <motion.div
+            data-theme={getPortalTheme()}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/45 p-4"
-            onClick={() => setDetailCode(null)}
+            className="dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center overscroll-none bg-black/45 p-2 backdrop-blur-sm md:items-center md:p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setDetailCode(null);
+            }}
           >
             <motion.div
               initial={{ y: 20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 12, opacity: 0 }}
               onClick={(event) => event.stopPropagation()}
-              className="mx-auto max-w-2xl rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-overlay)]"
+              className="relative max-h-[94dvh] w-full max-w-2xl overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)] md:rounded-[var(--radius-xl)]"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Register Code Details</p>
-                  <h3 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">{detailCode.code}</h3>
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">{detailCode.template_name || 'Untitled template'}</p>
-                </div>
-                <button type="button" className="ui-icon-button" onClick={() => setDetailCode(null)}>
+              <button type="button" className="ui-icon-button absolute right-4 top-4 z-20 bg-[var(--surface)] shadow-lg" onClick={() => setDetailCode(null)}>
                   <X className="h-4 w-4" />
-                </button>
-              </div>
+              </button>
+              <div className="ui-modal-scroll max-h-[94dvh] touch-pan-y overscroll-contain overflow-y-auto p-6 pb-8 pt-16">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Register Code Details</p>
+                    <h3 className="mt-2 break-all text-xl font-semibold text-[var(--text-primary)]">{detailCode.code}</h3>
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">{detailCode.template_name || 'Untitled template'}</p>
+                  </div>
+                </div>
 
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <div className="mt-6 grid gap-4 md:grid-cols-2">
                 <div className="ui-card-subtle p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Status</p>
                   <p className="mt-2 text-sm text-[var(--text-primary)]">{detailCode.status}</p>
@@ -560,9 +805,9 @@ export default function RegisterCodeManager({
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Used By</p>
                   <p className="mt-2 text-sm text-[var(--text-primary)]">{detailCode.used_by_username || 'Not used yet'}</p>
                 </div>
-              </div>
+                </div>
 
-              <div className="mt-6">
+                <div className="mt-6">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">App Permissions</p>
                 <div className="mt-3 space-y-3">
                   {parseConfig(detailCode).permissions?.length ? parseConfig(detailCode).permissions.map((permission: any) => (
@@ -583,9 +828,11 @@ export default function RegisterCodeManager({
                     <div className="ui-card-subtle p-4 text-sm text-[var(--text-secondary)]">No app permissions are attached to this register code.</div>
                   )}
                 </div>
+                </div>
               </div>
             </motion.div>
-          </motion.div>
+          </motion.div>,
+          document.body
         ) : null}
       </AnimatePresence>
     </div>

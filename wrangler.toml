@@ -15,7 +15,7 @@ crons = ["*/15 * * * *"]
 
 [vars]
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "Mylover10"
+ADMIN_PASSWORD = "qwer"
 JWT_SECRET = "1ee9f5ea-f5e0-42d1-b434-65df7efb42c4"
 CF_ACCOUNT_ID = "3903d3554a2e7453ce23f44bc989fe6b"
 GITHUB_CLIENT_ID = "Ov23liJvxA7wU7FRkMf7"

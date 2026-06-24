@@ -18,7 +18,8 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - 邮箱验证、重置密码、修改邮箱确认、安全提醒邮件
 - 用户中心 `/user/:uuid`
 - 管理员后台 `/dash`
-- 管理员用户、应用、注册码、权限、额度和统计管理
+- 管理员用户、应用、注册码、权限、额度、Test Access 和统计管理
+- 测试身份登录，用于 agent、CLI、浏览器自动化临时进入已发布子应用
 - D1 登录设备记录与设备撤销
 - Analytics Engine 访问统计
 - JWT 包含 `role`、`email`、`email_verified`、`auth_provider`
@@ -29,6 +30,7 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - 旧的 `username === "admin"` 兼容规则可以保留给历史子应用，但新子应用不应依赖它。
 - 公开注册时，`username` 和 `fullname` 不允许包含 `admin`。
 - 子应用不能直接处理邮箱、密码、验证码或注册码注册逻辑。
+- 测试身份与普通 `users` 表隔离，没有普通密码，也不会出现在普通登录页。
 
 ## 主要路由
 
@@ -40,6 +42,7 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - `/reset-password`：设置新密码。
 - `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。登录设备会显示发起登录的 `app_id`，直接在 Auth Center 中发起的登录记为 `auth-center`。
 - `/dash`：管理员后台。
+- `/dev/@name`：测试身份详情页，供 admin 查看活动和日志。
 
 ## 管理员后台
 
@@ -49,11 +52,36 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - Applications
 - Permissions
 - Register
+- Test Access
 - Statistics
 
 ### 子应用权限与额度
 
 Permissions 页使用真实 D1 数据，来源包括 `users`、`apps`、`user_apps` 和 `auth_audit_logs`。
+
+## 测试身份登录
+
+管理员可在 `/dash` → `Test Access` 创建测试身份。测试身份用于 agent、CLI、浏览器自动化或人工 QA 临时进入已发布的 subapp 检查可用性。
+
+- 测试身份使用独立 D1 表，不进入普通 `users` 表。
+- 测试身份没有普通密码，不能通过 `/login` 登录。
+- secret 可在创建、轮换和详情页复制；数据库保存 hash、prefix 和加密密文，禁止提交到代码、日志或公开聊天。
+- 终端命令使用 `name + secret + target_subapp` 调用 `/api/test-auth/exchange`。
+- exchange 返回一次性 `login_url`，默认 60 秒内必须打开，且只能消费一次。
+- 60 秒只限制登录链接消费时间，不限制测试时长。
+- 登录后的测试 session 默认 30 分钟，可按测试身份配置。
+- JWT 包含 `identity_type=test`、`test_session=true`、`allowed_subapps`、`data_scope`、`data_scope_permissions` 和 `session_id`。
+- 旧 subapp 保持兼容，完成 JWT 校验后可能默认全可见。
+- 新 subapp 应读取 `identity_type`、`data_scope` 和 `data_scope_permissions`，主动限制 public/private scope。公共权限默认包含同级私有权限，例如 `public_read` 包含 `private_read`，但不包含 `private_write`。
+- `private_write`、`admin`、全部应用、长 session 等高风险配置会触发红色确认弹窗。
+
+子应用适配请阅读：[测试身份适配指南](Subapp-Docs子应用配置文档/测试身份适配指南.md)。
+
+### Dashboard 弹窗
+
+- `/dash` → `Register` 中点击 register code 行会打开真实详情弹窗，展示 D1 中的状态、cookie 有效期、使用人和应用权限。
+- Register code、Test Access、删除确认、敏感确认弹窗都会浮在 dashboard 顶栏之上。
+- 过长弹窗会锁定底层页面滚动，关闭按钮固定在右上角；手机端也只滚动弹窗内容。
 
 桌面端：
 

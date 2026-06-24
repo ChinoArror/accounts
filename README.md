@@ -18,7 +18,8 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - Email verification, password reset, email change confirmation, and security notices
 - User account center at `/user/:uuid`
 - Admin dashboard at `/dash`
-- Admin user, app, register-code, permission, quota, and analytics management
+- Admin user, app, register-code, permission, quota, Test Access, and analytics management
+- Test Identity login for agent/CLI/browser automation access to published subapps
 - D1-backed login sessions and device revocation
 - Analytics Engine based access statistics
 - Role-aware JWTs with `role`, `email`, `email_verified`, and `auth_provider`
@@ -29,6 +30,7 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - Existing `username === "admin"` compatibility may still exist for older subapps, but new subapps should not depend on it.
 - Usernames and full names containing `admin` are rejected during public registration.
 - Child apps must not implement email/password/OTP/register-code logic directly.
+- Test identities are isolated from the normal `users` table, have no normal password, and are never exposed on the normal login page.
 
 ## Main Routes
 
@@ -40,6 +42,7 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - `/reset-password`: password reset form.
 - `/user/:uuid`: user account center, profile, email change, password change, register-code update, and login devices. Login device rows show the initiating `app_id`; direct Auth Center activity is recorded as `auth-center`.
 - `/dash`: admin dashboard.
+- `/dev/@name`: Test Identity detail page for admin review.
 
 ## Admin Dashboard
 
@@ -49,9 +52,33 @@ Dashboard tabs:
 - Applications
 - Permissions
 - Register
+- Test Access
 - Statistics
 
 The Permissions tab is now the subapp permission and quota management surface. It uses real D1 data from `users`, `apps`, `user_apps`, and `auth_audit_logs`.
+
+## Test Identity Login
+
+Admins can create Test Identities from `/dash` → `Test Access`. A Test Identity is for temporary published subapp testing by agents, CLI tools, browser automation, or manual QA.
+
+- Test identities use separate D1 tables and never enter the normal `users` table.
+- Test identities have no normal password and cannot log in through `/login`.
+- A secret can be copied from create, rotate, and detail views. The database stores its hash, prefix, and encrypted cipher text.
+- The terminal command calls `/api/test-auth/exchange` with `name + secret + target_subapp`.
+- Exchange returns a one-time `login_url`; the URL is valid for 60 seconds by default and can be consumed only once.
+- The actual test session is separate from that one-time URL and defaults to 30 minutes. It is configurable per identity.
+- The JWT contains `identity_type=test`, `test_session=true`, `allowed_subapps`, `data_scope`, `data_scope_permissions`, and `session_id`.
+- Old subapps remain compatible and may treat test sessions as fully visible after JWT verification.
+- New subapps should read `identity_type`, `data_scope`, and `data_scope_permissions` and enforce public/private data access rules. Public scopes include same-level private scopes, for example `public_read` includes `private_read` but not `private_write`.
+- High-risk settings such as `private_write`, `admin`, all subapps, or long sessions trigger a red confirmation dialog.
+
+Chinese adapter guide: [测试身份适配指南](Subapp-Docs子应用配置文档/测试身份适配指南.md).
+
+### Dashboard Dialogs
+
+- Register code rows in `/dash` -> `Register` open a real detail dialog with status, cookie expiry, usage, and app permissions from D1.
+- Register code, Test Access, delete confirmation, and sensitive confirmation dialogs are rendered above the dashboard chrome.
+- Long dialogs keep the close button fixed in the top-right corner and lock background scrolling, including on mobile.
 
 ### Permission Management
 

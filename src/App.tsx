@@ -18,6 +18,7 @@ import SessionCenter from './SessionCenter';
 import RegisterCodeManager from './RegisterCodeManager';
 import PermissionMatrix from './PermissionMatrix';
 import DatePicker from './DatePicker';
+import { TestAccess, TestIdentityDevPage, TestIdentityDocsPage } from './TestAccess';
 import {
   AccountSecurityPage,
   AdminSecurityPage,
@@ -712,12 +713,13 @@ function Dashboard() {
           )}
         </div>
 
-        <nav className="flex md:flex-col overflow-x-auto px-4 pb-2 md:pb-4 md:space-y-2 w-full no-scrollbar">
+        <nav className="ui-modal-scroll flex md:flex-col overflow-x-auto md:overflow-y-auto px-4 pb-2 md:pb-3 md:space-y-1 w-full no-scrollbar">
           {[
             { id: 'users', icon: Users, label: 'Users' },
             { id: 'apps', icon: LayoutGrid, label: 'Applications' },
             { id: 'permissions', icon: KeyRound, label: 'Permissions' },
             { id: 'register', icon: Ticket, label: 'Register' },
+            { id: 'test-access', icon: Shield, label: 'Test Access' },
             { id: 'statistics', icon: BarChart3, label: 'Statistics' }
           ].map(tab => (
             <motion.button
@@ -725,7 +727,7 @@ function Dashboard() {
               data-active={activeTab === tab.id}
               whileTap={{ scale: 0.98 }}
               onClick={() => setActiveTab(tab.id)}
-              className="ui-nav-pill flex-shrink-0 flex items-center gap-2 md:gap-3 px-4 py-2.5 md:py-3 font-medium transition-all duration-300"
+              className="ui-nav-pill flex-shrink-0 flex items-center gap-2 md:gap-3 px-4 py-2.5 md:py-2.5 font-medium transition-all duration-300"
             >
               <tab.icon className="w-5 h-5" />
               <span className="whitespace-nowrap">{tab.label}</span>
@@ -733,7 +735,7 @@ function Dashboard() {
           ))}
         </nav>
 
-        <div className="hidden md:block p-4 mt-auto mb-4">
+        <div className="hidden md:block p-3 mt-auto mb-3">
           <motion.button
             whileHover={{ y: -1 }} whileTap={{ scale: 0.98 }}
             onClick={handleLogout}
@@ -962,6 +964,10 @@ function Dashboard() {
 
             {activeTab === 'register' && (
               <RegisterCodeManager authFetch={authFetch} apps={apps} />
+            )}
+
+            {activeTab === 'test-access' && (
+              <TestAccess authFetch={authFetch} apps={apps} />
             )}
 
             {activeTab === 'statistics' && (() => {
@@ -1305,6 +1311,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/dash" element={<Dashboard />} />
+      <Route path="/dev/docs" element={<TestIdentityDocsPage />} />
+      <Route path="/dev/:name" element={<TestIdentityDevPage />} />
       <Route path="/admin/passkey" element={<AdminPasskeyManage />} />
       <Route path="/admin/security" element={<AdminSecurityPage />} />
       <Route path="/login" element={<EmailLoginPage />} />
