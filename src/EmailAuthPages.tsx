@@ -253,12 +253,21 @@ export function EmailLoginPage() {
   const [password, setPassword] = React.useState('');
   const [code, setCode] = React.useState('');
   const [codeSent, setCodeSent] = React.useState(false);
+  const [resendCooldown, setResendCooldown] = React.useState(0);
   const [turnstile, setTurnstile] = React.useState('');
   const [turnstileReset, setTurnstileReset] = React.useState(0);
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const redirectUri = searchParams.get('redirect') || searchParams.get('redirect_uri') || '';
   const appId = searchParams.get('app_id') || searchParams.get('client_id') || 'auth-center';
+
+  React.useEffect(() => {
+    if (resendCooldown <= 0) return undefined;
+    const timer = window.setInterval(() => {
+      setResendCooldown((value) => Math.max(0, value - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown > 0]);
 
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -288,6 +297,9 @@ export function EmailLoginPage() {
       const data = await apiPost('/api/auth/login/otp/send', { email, turnstile_token: turnstile });
       setMessage(data.message);
       setCodeSent(true);
+      setResendCooldown(60);
+      setTurnstile('');
+      setTurnstileReset((value) => value + 1);
     } catch (error: any) {
       setMessage(error.message);
       setTurnstile('');
@@ -382,6 +394,15 @@ export function EmailLoginPage() {
           ) : (
             <>
               <Field label="Six-digit code"><input inputMode="numeric" maxLength={6} required value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} /></Field>
+              {resendCooldown === 0 ? <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} /> : null}
+              <button
+                className="ui-button-secondary w-full"
+                type="button"
+                onClick={sendOtp}
+                disabled={loading || resendCooldown > 0 || !turnstile}
+              >
+                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend code'}
+              </button>
               <button className="ui-button-primary w-full" disabled={loading || code.length !== 6}>{loading ? 'Signing in...' : 'Sign in'}</button>
             </>
           )}
@@ -400,11 +421,29 @@ export function EmailLoginPage() {
 export function RegisterEmailPage() {
   const rules = useRegistrationRules();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const inviteToken = searchParams.get('invite') || '';
   const [form, setForm] = React.useState({ email: '', username: '', fullname: '', password: '', register_code: '', birthday: '', avatar_data: '' });
   const [turnstile, setTurnstile] = React.useState('');
   const [turnstileReset, setTurnstileReset] = React.useState(0);
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+  const [invitation, setInvitation] = React.useState<{ expires_at: string; expires_at_display: string } | null>(null);
+  const [inviteLoading, setInviteLoading] = React.useState(Boolean(inviteToken));
+
+  React.useEffect(() => {
+    if (!inviteToken) return;
+    setInviteLoading(true);
+    fetch(`${API_BASE}/api/auth/register/invite?token=${encodeURIComponent(inviteToken)}`, { credentials: 'include' })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.message || 'This invitation is invalid or has expired.');
+        setForm((current) => ({ ...current, email: data.email, register_code: data.register_code }));
+        setInvitation({ expires_at: data.expires_at, expires_at_display: data.expires_at_display });
+      })
+      .catch((error) => setMessage(error.message || 'This invitation is invalid or has expired.'))
+      .finally(() => setInviteLoading(false));
+  }, [inviteToken]);
 
   const readAvatar = (file?: File) => {
     if (!file) {
@@ -421,7 +460,13 @@ export function RegisterEmailPage() {
     setLoading(true);
     setMessage('');
     try {
-      const data = await apiPost('/api/auth/register', { ...form, confirm_password: form.password, turnstile_token: turnstile });
+      const data = await apiPost('/api/auth/register', { ...form, confirm_password: form.password, turnstile_token: turnstile, invite_token: inviteToken || undefined });
+      if (data.token) {
+        const target = data.redirect_to || routeForToken(data.token);
+        if (target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
+        window.location.assign(target);
+        return;
+      }
       navigate(`/verify-email?email=${encodeURIComponent(form.email)}&message=${encodeURIComponent(data.message)}`);
     } catch (error: any) {
       setMessage(error.message);
@@ -435,22 +480,26 @@ export function RegisterEmailPage() {
   return (
     <AuthFrame title="Create account">
       <div className="mb-5">
-        <Notice>{!rules ? 'Loading registration rules...' : rules.email_registration_allowed && rules.external_registration_enabled !== false ? 'Public registration is open.' : 'Public registration is closed.'}</Notice>
+        {inviteToken ? (
+          invitation ? <Notice tone="success">Invitation reserved until {invitation.expires_at_display}. Complete registration before day 7 at 00:00.</Notice> : <Notice tone={message ? 'danger' : 'normal'}>{inviteLoading ? 'Loading invitation...' : message || 'Invitation unavailable.'}</Notice>
+        ) : (
+          <Notice>{!rules ? 'Loading registration rules...' : rules.email_registration_allowed && rules.external_registration_enabled !== false ? 'Public registration is open.' : 'Public registration is closed.'}</Notice>
+        )}
       </div>
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Email"><input type="email" required value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field>
+        <Field label="Email"><input type="email" required readOnly={!!invitation} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field>
         <Field label="Username"><input required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></Field>
         <Field label="Full name"><input required value={form.fullname} onChange={(event) => setForm({ ...form, fullname: event.target.value })} /></Field>
         <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></Field>
-        <Field label="Register code"><input value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
+        <Field label="Register code"><input readOnly={!!invitation} value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Birthday"><input type="date" value={form.birthday} onChange={(event) => setForm({ ...form, birthday: event.target.value })} /></Field>
           <Field label="Avatar"><input type="file" accept="image/*" onChange={(event) => readAvatar(event.target.files?.[0])} /></Field>
         </div>
         <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
-        <button className="ui-button-primary w-full" disabled={loading || !turnstile || !rules?.email_registration_allowed || rules.external_registration_enabled === false}>{loading ? 'Creating...' : 'Create account'}</button>
+        <button className="ui-button-primary w-full" disabled={loading || inviteLoading || (!!inviteToken && !invitation) || !turnstile || (!invitation && (!rules?.email_registration_allowed || rules.external_registration_enabled === false))}>{loading ? 'Creating...' : 'Create account'}</button>
       </form>
-      {message ? <div className="mt-4"><Notice tone="danger">{message}</Notice></div> : null}
+      {message && (!inviteToken || invitation) ? <div className="mt-4"><Notice tone="danger">{message}</Notice></div> : null}
       <Link to="/login" className="mt-5 block text-center font-semibold text-[var(--primary)] no-underline">Back to sign in</Link>
     </AuthFrame>
   );
@@ -504,6 +553,7 @@ export function VerifyEmailNoticePage() {
   const [turnstileReset, setTurnstileReset] = React.useState(0);
   const [message, setMessage] = React.useState(searchParams.get('message') || (searchParams.get('status') === 'success' ? 'Email verified.' : 'Check your inbox.'));
   const [loading, setLoading] = React.useState(false);
+  const status = searchParams.get('status');
 
   const resend = async () => {
     setLoading(true);
@@ -521,15 +571,26 @@ export function VerifyEmailNoticePage() {
 
   return (
     <AuthFrame title="Verify email">
-      <div className="space-y-4">
-        <Notice tone={searchParams.get('status') === 'success' ? 'success' : 'normal'}>{message}</Notice>
-        <Field label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
-        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
-        <button className="ui-button-primary flex w-full items-center justify-center gap-2" onClick={resend} disabled={loading || !email || !turnstile}>
-          <RefreshCw className="h-4 w-4" /> Resend email
-        </button>
-        <Link to="/login" className="ui-button-secondary flex w-full items-center justify-center no-underline">Back to sign in</Link>
-      </div>
+      {status === 'success' ? (
+        <div className="space-y-6 text-center">
+          <CheckCircle2 className="mx-auto h-24 w-24 text-[var(--success)]" strokeWidth={1.7} />
+          <div>
+            <h2 className="text-2xl font-bold text-[var(--text-primary)]">Email verified successfully</h2>
+            <p className="mt-2 text-sm text-[var(--text-secondary)]">Your account is ready to use.</p>
+          </div>
+          <Link to="/login" className="ui-button-primary flex w-full items-center justify-center no-underline">Back to sign in</Link>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <Notice tone="normal">{message}</Notice>
+          <Field label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
+          <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
+          <button className="ui-button-primary flex w-full items-center justify-center gap-2" onClick={resend} disabled={loading || !email || !turnstile}>
+            <RefreshCw className="h-4 w-4" /> Resend email
+          </button>
+          <Link to="/login" className="ui-button-secondary flex w-full items-center justify-center no-underline">Back to sign in</Link>
+        </div>
+      )}
     </AuthFrame>
   );
 }

@@ -3,7 +3,8 @@ import { cors } from 'hono/cors';
 import { hashPassword, generateSalt, verifyPassword, generateJWT, verifyJWT } from './auth';
 import { getCookie, setCookie } from 'hono/cookie';
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from '@simplewebauthn/server';
-import { registerEmailAuthFeature } from './emailAuthFeature';
+import { cleanupExpiredPendingRegistrations, registerEmailAuthFeature, releaseExpiredRegisterInvites } from './emailAuthFeature';
+import { buildPreviewUrl, expandPreviewApps, normalizePreviewEnabled, previewSessionExpiresAt } from './testPreview';
 
 type D1Database = any;
 type AnalyticsEngineDataset = any;
@@ -28,7 +29,8 @@ type Bindings = {
   ASSETS: Fetcher;
   AVATAR_BUCKET: R2Bucket;
   ADMIN_USERNAME: string;
-  ADMIN_PASSWORD: string;
+  ADMIN_PASSWORD?: string;
+  ADMIN_PASSWORD_SECRET?: string;
   JWT_SECRET: string;
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN: string;
@@ -68,10 +70,19 @@ function getAdminCookieExpiryDays(c: any) {
   return Number.isFinite(configured) && configured > 0 ? Math.round(configured) : 7;
 }
 
+function getAdminPassword(c: any) {
+  return String(c.env.ADMIN_PASSWORD_SECRET || c.env.ADMIN_PASSWORD || '');
+}
+
 function getClientIp(c: any) {
   return c.req.header('CF-Connecting-IP')
     || c.req.header('X-Forwarded-For')?.split(',')[0]?.trim()
     || null;
+}
+
+function getCountryCode(c: any) {
+  const value = String(c.req.header('CF-IPCountry') || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(value) ? value : null;
 }
 
 async function sha256Hex(input: string | null | undefined) {
@@ -532,6 +543,7 @@ function normalizeTestIdentityRow(row: any) {
   if (!row) return null;
   return {
     ...row,
+    preview_enabled: normalizePreviewEnabled(row.preview_enabled),
     allowed_subapps: parseJsonArrayField(row.allowed_subapps),
     allowed_ip_ranges: parseJsonArrayField(row.allowed_ip_ranges),
     session_ttl_minutes: Number(row.session_ttl_minutes || 30),
@@ -567,6 +579,7 @@ function normalizeTestIdentityInput(body: any) {
     expires_at: new Date(Date.parse(expiresAt)).toISOString(),
     session_ttl_minutes: sessionTtl,
     one_time_token_ttl_seconds: tokenTtl,
+    preview_enabled: normalizePreviewEnabled(body?.preview_enabled),
     data_scope: dataScope,
     max_api_calls_per_session: normalizeLimitValue(body?.max_api_calls_per_session),
     allowed_ip_ranges: parseJsonArrayField(body?.allowed_ip_ranges),
@@ -580,6 +593,7 @@ function getTestIdentityRiskReasons(input: any) {
   if (input.data_scope === 'private_read') reasons.push('private_read can read real user content, files, records, or settings');
   if (input.data_scope === 'private_write') reasons.push('private_write can read and modify real app data');
   if (input.role === 'admin') reasons.push('模拟管理员 role=admin');
+  if (input.preview_enabled) reasons.push('Preview 链接可使用长期测试 secret 交换浏览器 session');
   if (Number(input.session_ttl_minutes) > 60) reasons.push('测试 session 超过 60 分钟');
   if (parseJsonArrayField(input.allowed_subapps).some((item) => item === '*' || item === 'all')) reasons.push('允许访问全部应用');
   if (Date.parse(input.expires_at) - Date.now() > 7 * 86400 * 1000) reasons.push('测试身份有效期超过 7 天');
@@ -663,6 +677,101 @@ function buildTestJwtPayload(c: any, identity: any, sessionId: string, targetSub
     target_subapp: targetSubapp,
     iat: Math.floor(Date.now() / 1000),
   };
+}
+
+function setPreviewResponseHeaders(c: any) {
+  c.header('Cache-Control', 'no-store, private');
+  c.header('Pragma', 'no-cache');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Content-Type-Options', 'nosniff');
+}
+
+function previewJson(c: any, body: any, status = 200) {
+  setPreviewResponseHeaders(c);
+  return c.json(body, status as any);
+}
+
+function setPreviewSessionCookie(c: any, token: string, maxAgeSeconds: number) {
+  setCookie(c, 'test_preview_session', token, {
+    path: '/preview',
+    secure: true,
+    httpOnly: true,
+    sameSite: 'Strict',
+    maxAge: maxAgeSeconds,
+  });
+}
+
+function clearPreviewSessionCookie(c: any) {
+  setCookie(c, 'test_preview_session', '', {
+    path: '/preview',
+    secure: true,
+    httpOnly: true,
+    sameSite: 'Strict',
+    maxAge: 0,
+  });
+}
+
+function isActivePreviewIdentity(identity: any) {
+  return Boolean(
+    identity
+      && normalizePreviewEnabled(identity.preview_enabled)
+      && identity.status === 'active'
+      && !identity.disabled_at
+      && !identity.deleted_at
+      && Date.parse(identity.expires_at) > Date.now(),
+  );
+}
+
+async function createTestIdentitySession(c: any, identity: any, targetSubapp: string, expiresAt: string) {
+  const sessionId = crypto.randomUUID();
+  const jwtId = crypto.randomUUID();
+  const remainingDays = Math.max(1, Date.parse(expiresAt) - Date.now()) / (24 * 60 * 60 * 1000);
+  const payload = buildTestJwtPayload(c, identity, sessionId, targetSubapp);
+  const jwtToken = await generateJWT({ ...payload, jti: jwtId }, c.env.JWT_SECRET, remainingDays);
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(`
+    INSERT INTO test_sessions (id, test_identity_id, target_subapp, session_token_hash, jwt_id, status, created_at, expires_at, ip_hash, user_agent)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+  `).bind(
+    sessionId,
+    identity.id,
+    targetSubapp,
+    await sha256Hex(jwtToken),
+    jwtId,
+    now,
+    expiresAt,
+    await sha256Hex(getClientIp(c)),
+    c.req.header('User-Agent') || null,
+  ).run();
+
+  return { sessionId, jwtToken, expiresAt };
+}
+
+async function authenticatePreviewSession(c: any) {
+  const token = getCookie(c, 'test_preview_session');
+  if (!token) return null;
+
+  try {
+    const payload: any = await verifyJWT(token, c.env.JWT_SECRET);
+    const identityId = String(payload?.sub || payload?.uuid || '');
+    const sessionId = String(payload?.session_id || '');
+    if (!identityId || !sessionId || payload.identity_type !== 'test' || payload.target_subapp !== 'auth-center-preview') return null;
+
+    const [identity, session]: any[] = await Promise.all([
+      c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ?').bind(identityId).first(),
+      c.env.DB.prepare(`
+        SELECT * FROM test_sessions
+        WHERE id = ? AND test_identity_id = ? AND target_subapp = 'auth-center-preview'
+      `).bind(sessionId, identityId).first(),
+    ]);
+    if (!isActivePreviewIdentity(identity)) return null;
+    if (!session || session.status !== 'active' || session.revoked_at || Date.parse(session.expires_at) <= Date.now()) return null;
+
+    return { token, payload, identity, session };
+  } catch {
+    return null;
+  }
 }
 
 async function getTestActivity(c: any, id: string) {
@@ -794,7 +903,7 @@ app.post('/login', async (c) => {
   let userToAuth: any = null;
   const adminEmail = normalizeLoginEmail(c.env.ADMIN_EMAIL || '');
 
-  if ((identifier === c.env.ADMIN_USERNAME || (!!adminEmail && loginEmail === adminEmail)) && password === c.env.ADMIN_PASSWORD) {
+  if ((identifier === c.env.ADMIN_USERNAME || (!!adminEmail && loginEmail === adminEmail)) && password === getAdminPassword(c)) {
     userToAuth = {
       uuid: 'admin',
       user_id: "0",
@@ -948,7 +1057,7 @@ app.post('/api/register', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO users (
         id, uuid, username, name, role, status, auth_provider, email_verified, password_hash, password_salt, password_plain, cookie_expiry_days, birthday, avatar_data, avatar_key, updated_at
-      ) VALUES (?, ?, ?, ?, 'user', 'active', 'code', 0, ?, ?, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, 'user', 'active', 'code', 0, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `).bind(
       uuid,
       uuid,
@@ -956,6 +1065,7 @@ app.post('/api/register', async (c) => {
       name,
       hash,
       salt,
+      password,
       config.cookie_expiry_days,
       birthday || null,
       null,
@@ -966,13 +1076,23 @@ app.post('/api/register', async (c) => {
 
     const claimResult: any = await c.env.DB.prepare(`
       UPDATE register_codes
-      SET status = 'used', used_by_uuid = ?, used_by_username = ?, used_at = CURRENT_TIMESTAMP
+      SET status = 'used', max_uses = 1, used_count = 1, used_by_uuid = ?, used_by_username = ?, used_at = CURRENT_TIMESTAMP
       WHERE code = ? AND status = 'unused'
     `).bind(uuid, username, register_code).run();
 
     if (!claimResult?.meta?.changes) {
       throw new Error('Register code is no longer available');
     }
+    await c.env.DB.prepare(`
+      INSERT INTO register_code_uses (id, code_id, user_id, used_at, ip_hash, country_code)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      register_code,
+      uuid,
+      await sha256Hex(getClientIp(c)),
+      getCountryCode(c)
+    ).run();
 
     return c.json({
       success: true,
@@ -982,6 +1102,12 @@ app.post('/api/register', async (c) => {
     });
   } catch (e: any) {
     await deleteAvatarIfPresent(c, avatarKey);
+    await c.env.DB.prepare(`
+      UPDATE register_codes
+      SET status = 'unused', used_count = 0, used_by_uuid = NULL, used_by_username = NULL, used_at = NULL
+      WHERE code = ? AND used_by_uuid = ?
+    `).bind(register_code, uuid).run().catch(() => null);
+    await c.env.DB.prepare('DELETE FROM register_code_uses WHERE code_id = ? AND user_id = ?').bind(register_code, uuid).run().catch(() => null);
     await c.env.DB.prepare('DELETE FROM user_apps WHERE uuid = ?').bind(uuid).run().catch(() => { });
     await c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid).run().catch(() => { });
     return c.json({ error: e.message || 'Registration failed' }, 400);
@@ -1016,6 +1142,147 @@ app.get('/api/session', async (c) => {
   const activeSession = await authenticateCookieSession(c, true);
   if (!activeSession) return c.json({ active: false }, 401);
   return c.json({ active: true, user: activeSession.payload, token: activeSession.token });
+});
+
+app.post('/preview/api/session', async (c) => {
+  let identity: any = null;
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const name = normalizeTestName(body?.name);
+    const secret = String(body?.secret || '').trim();
+    if (!name || !secret) {
+      await writeTestAudit(c, { eventType: 'preview_session_failed', targetSubapp: 'auth-center-preview', success: false, detail: { reason: 'missing_credentials' } });
+      return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+    }
+
+    identity = await c.env.DB.prepare(`
+      SELECT ti.*, tis.id AS secret_id, tis.secret_hash
+      FROM test_identities ti
+      JOIN test_identity_secrets tis ON tis.test_identity_id = ti.id AND tis.status = 'active'
+      WHERE ti.name = ? AND ti.deleted_at IS NULL
+      ORDER BY tis.created_at DESC
+      LIMIT 1
+    `).bind(name).first();
+    const secretHash = await hashTestSecret(secret);
+    if (!identity || identity.secret_hash !== secretHash || !isActivePreviewIdentity(identity) || !requestIpAllowed(c, identity)) {
+      await writeTestAudit(c, {
+        testIdentityId: identity?.id,
+        eventType: 'preview_session_failed',
+        targetSubapp: 'auth-center-preview',
+        success: false,
+        detail: { reason: 'access_denied' },
+      });
+      return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+    }
+
+    await writeTestAudit(c, { testIdentityId: identity.id, eventType: 'preview_session_attempt', targetSubapp: 'auth-center-preview', success: true });
+    const expiresAt = previewSessionExpiresAt(new Date(), Number(identity.session_ttl_minutes || 30));
+    const session = await createTestIdentitySession(c, identity, 'auth-center-preview', expiresAt);
+    await c.env.DB.prepare('UPDATE test_identity_secrets SET last_used_at = ? WHERE id = ?').bind(new Date().toISOString(), identity.secret_id).run();
+    setPreviewSessionCookie(c, session.jwtToken, Math.max(1, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000)));
+    await writeTestAudit(c, {
+      testIdentityId: identity.id,
+      eventType: 'preview_session_created',
+      targetSubapp: 'auth-center-preview',
+      success: true,
+      detail: { session_id: session.sessionId },
+    });
+    return previewJson(c, { ok: true, expires_at: expiresAt });
+  } catch {
+    await writeTestAudit(c, { testIdentityId: identity?.id, eventType: 'preview_session_failed', targetSubapp: 'auth-center-preview', success: false, detail: { reason: 'unexpected_error' } });
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+  }
+});
+
+app.get('/preview/api/session', async (c) => {
+  const previewSession = await authenticatePreviewSession(c);
+  if (!previewSession) {
+    clearPreviewSessionCookie(c);
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+  }
+
+  const { results } = await c.env.DB.prepare(`
+    SELECT app_id, app_name, status
+    FROM apps
+    WHERE COALESCE(status, 'active') = 'active'
+    ORDER BY app_name ASC
+  `).all();
+  const apps = expandPreviewApps(
+    parseJsonArrayField(previewSession.identity.allowed_subapps),
+    (results || []).map((app: any) => ({ ...app, status: app.status || 'active' })),
+  ).map((app) => ({ app_id: app.app_id, app_name: app.app_name || app.name || app.app_id }));
+
+  return previewJson(c, {
+    ok: true,
+    identity: {
+      name: previewSession.identity.name,
+      display_name: previewSession.identity.display_name || previewSession.identity.name,
+      role: previewSession.identity.role || 'user',
+      expires_at: previewSession.identity.expires_at,
+    },
+    session: { expires_at: previewSession.session.expires_at },
+    apps,
+  });
+});
+
+app.post('/preview/api/launch', async (c) => {
+  const previewSession = await authenticatePreviewSession(c);
+  if (!previewSession) {
+    clearPreviewSessionCookie(c);
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+  }
+  const body = await c.req.json().catch(() => ({}));
+  const appId = String(body?.app_id || '').trim();
+  if (!appId || !testIdentityAllowsSubapp(previewSession.identity, appId)) {
+    await writeTestAudit(c, { testIdentityId: previewSession.identity.id, eventType: 'preview_app_launch_denied', targetSubapp: appId || null, success: false, detail: { reason: 'subapp_not_allowed' } });
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 403);
+  }
+
+  const appRecord: any = await c.env.DB.prepare(`
+    SELECT app_id, callback_url, status
+    FROM apps
+    WHERE app_id = ? AND COALESCE(status, 'active') = 'active'
+  `).bind(appId).first();
+  let callback: URL;
+  try {
+    callback = new URL(String(appRecord?.callback_url || ''));
+    if (!['http:', 'https:'].includes(callback.protocol)) throw new Error('unsupported_callback_protocol');
+  } catch {
+    await writeTestAudit(c, { testIdentityId: previewSession.identity.id, eventType: 'preview_app_launch_denied', targetSubapp: appId, success: false, detail: { reason: 'app_unavailable' } });
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 403);
+  }
+
+  const expiresAtMs = Math.min(Date.parse(previewSession.session.expires_at), Date.parse(previewSession.identity.expires_at));
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    clearPreviewSessionCookie(c);
+    return previewJson(c, { ok: false, error: 'Preview access denied' }, 401);
+  }
+  const session = await createTestIdentitySession(c, previewSession.identity, appId, new Date(expiresAtMs).toISOString());
+  callback.hash = '';
+  callback.searchParams.set('token', session.jwtToken);
+  callback.searchParams.set('identity_type', 'test');
+  await writeTestAudit(c, {
+    testIdentityId: previewSession.identity.id,
+    eventType: 'preview_app_launch',
+    targetSubapp: appId,
+    success: true,
+    detail: { preview_session_id: previewSession.session.id, session_id: session.sessionId },
+  });
+  return previewJson(c, { ok: true, redirect_url: callback.toString() });
+});
+
+app.post('/preview/api/logout', async (c) => {
+  const previewSession = await authenticatePreviewSession(c);
+  if (previewSession) {
+    await c.env.DB.prepare(`
+      UPDATE test_sessions
+      SET status = 'revoked', revoked_at = ?
+      WHERE id = ? AND test_identity_id = ? AND revoked_at IS NULL
+    `).bind(new Date().toISOString(), previewSession.session.id, previewSession.identity.id).run();
+    await writeTestAudit(c, { testIdentityId: previewSession.identity.id, eventType: 'preview_session_revoked', targetSubapp: 'auth-center-preview', success: true, detail: { session_id: previewSession.session.id } });
+  }
+  clearPreviewSessionCookie(c);
+  return previewJson(c, { ok: true });
 });
 
 app.post('/api/test-auth/exchange', async (c) => {
@@ -1684,7 +1951,7 @@ app.post('/api/users/:uuid/verify-password', async (c) => {
   const { password } = await c.req.json();
 
   if (uuid === 'admin') {
-    if (password === c.env.ADMIN_PASSWORD) {
+    if (password === getAdminPassword(c)) {
       const token = await generateJWT({ action: 'bind', uuid }, c.env.JWT_SECRET, 1 / 24);
       return c.json({ success: true, bind_token: token });
     } else {
@@ -2190,7 +2457,7 @@ async function adminAuthGuard(c: any, next: any) {
       const separatorIndex = decoded.indexOf(':');
       const username = separatorIndex >= 0 ? decoded.slice(0, separatorIndex) : '';
       const password = separatorIndex >= 0 ? decoded.slice(separatorIndex + 1) : '';
-      if (username === c.env.ADMIN_USERNAME && password === c.env.ADMIN_PASSWORD) {
+      if (username === c.env.ADMIN_USERNAME && password === getAdminPassword(c)) {
         return next();
       }
     } catch (e) { }
@@ -2209,8 +2476,45 @@ app.post('/admin/bind-token', async (c) => {
 });
 
 app.get('/admin/register-codes', async (c) => {
+  await releaseExpiredRegisterInvites(c.env);
   const { results } = await c.env.DB.prepare(`
-    SELECT code, template_name, config_json, status, used_by_uuid, used_by_username, used_at, created_at
+    SELECT
+      register_codes.code,
+      register_codes.template_name,
+      register_codes.config_json,
+      register_codes.status,
+      COALESCE(
+        register_codes.used_by_uuid,
+        (
+          SELECT uses.user_id
+          FROM register_code_uses uses
+          WHERE uses.code_id = register_codes.id OR uses.code_id = register_codes.code
+          ORDER BY uses.used_at DESC
+          LIMIT 1
+        )
+      ) AS used_by_uuid,
+      COALESCE(
+        register_codes.used_by_username,
+        (
+          SELECT code_user.username
+          FROM register_code_uses uses
+          INNER JOIN users code_user ON code_user.uuid = uses.user_id OR code_user.id = uses.user_id
+          WHERE uses.code_id = register_codes.id OR uses.code_id = register_codes.code
+          ORDER BY uses.used_at DESC
+          LIMIT 1
+        )
+      ) AS used_by_username,
+      register_codes.used_at,
+      register_codes.created_at,
+      register_codes.invited_email,
+      register_codes.invite_expires_at,
+      (
+        SELECT uses.country_code
+        FROM register_code_uses uses
+        WHERE uses.code_id = register_codes.id OR uses.code_id = register_codes.code
+        ORDER BY uses.used_at DESC
+        LIMIT 1
+      ) AS country_code
     FROM register_codes
     ORDER BY created_at DESC
   `).all();
@@ -2309,9 +2613,9 @@ app.post('/api/admin/test-identities', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO test_identities (
         id, name, display_name, role, status, allowed_subapps, target_default_subapp, data_scope,
-        session_ttl_minutes, one_time_token_ttl_seconds, max_api_calls_per_session,
+        preview_enabled, session_ttl_minutes, one_time_token_ttl_seconds, max_api_calls_per_session,
         allowed_ip_ranges, expires_at, created_by, created_at, updated_at, notes
-      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       input.name,
@@ -2320,6 +2624,7 @@ app.post('/api/admin/test-identities', async (c) => {
       JSON.stringify(input.allowed_subapps),
       input.target_default_subapp,
       input.data_scope,
+      input.preview_enabled ? 1 : 0,
       input.session_ttl_minutes,
       input.one_time_token_ttl_seconds,
       input.max_api_calls_per_session,
@@ -2344,6 +2649,7 @@ app.post('/api/admin/test-identities', async (c) => {
       secret,
       secret_prefix: secretPrefix,
       agent_command: buildTestAgentCommand(c, row, secret),
+      preview_url: input.preview_enabled ? buildPreviewUrl(getRequestOrigin(c), row.name, secret) : null,
       risk_reasons: getTestIdentityRiskReasons(input),
     });
   } catch (e: any) {
@@ -2373,6 +2679,7 @@ app.get('/api/admin/test-identities/by-name/:name', async (c) => {
     secret: secretInfo.secret,
     secret_prefix: secretInfo.secret_prefix,
     agent_command: secretInfo.secret ? buildTestAgentCommand(c, identity, secretInfo.secret) : null,
+    preview_url: identity.preview_enabled && secretInfo.secret ? buildPreviewUrl(getRequestOrigin(c), identity.name, secretInfo.secret) : null,
   });
 });
 
@@ -2387,6 +2694,9 @@ app.get('/api/admin/test-identities/:id/activity', async (c) => {
     secret: secretInfo.secret,
     secret_prefix: secretInfo.secret_prefix,
     agent_command: identity && secretInfo.secret ? buildTestAgentCommand(c, normalizeTestIdentityRow(identity), secretInfo.secret) : null,
+    preview_url: normalizeTestIdentityRow(identity)?.preview_enabled && secretInfo.secret
+      ? buildPreviewUrl(getRequestOrigin(c), identity.name, secretInfo.secret)
+      : null,
   });
 });
 
@@ -2405,6 +2715,9 @@ app.put('/api/admin/test-identities/:id', async (c) => {
     : String(identity.role || 'user');
   const nextTarget = String(body?.target_default_subapp || identity.target_default_subapp || nextAllowedSubapps[0] || '').trim() || null;
   const nextApiLimit = normalizeLimitValue(body?.max_api_calls_per_session ?? identity.max_api_calls_per_session);
+  const nextPreviewEnabled = body?.preview_enabled === undefined
+    ? normalizePreviewEnabled(identity.preview_enabled)
+    : normalizePreviewEnabled(body?.preview_enabled);
   const input = {
     ...normalizeTestIdentityRow(identity),
     role: nextRole,
@@ -2412,11 +2725,12 @@ app.put('/api/admin/test-identities/:id', async (c) => {
     allowed_subapps: nextAllowedSubapps,
     target_default_subapp: nextTarget,
     max_api_calls_per_session: nextApiLimit,
+    preview_enabled: nextPreviewEnabled,
   };
   const now = new Date().toISOString();
   await c.env.DB.prepare(`
     UPDATE test_identities
-    SET role = ?, allowed_subapps = ?, target_default_subapp = ?, data_scope = ?, max_api_calls_per_session = ?, updated_at = ?
+    SET role = ?, allowed_subapps = ?, target_default_subapp = ?, data_scope = ?, max_api_calls_per_session = ?, preview_enabled = ?, updated_at = ?
     WHERE id = ? AND deleted_at IS NULL
   `).bind(
     nextRole,
@@ -2424,16 +2738,32 @@ app.put('/api/admin/test-identities/:id', async (c) => {
     nextTarget,
     nextDataScope,
     nextApiLimit,
+    nextPreviewEnabled ? 1 : 0,
     now,
     id
   ).run();
+  if (!nextPreviewEnabled) {
+    await c.env.DB.prepare(`
+      UPDATE test_sessions
+      SET status = 'revoked', revoked_at = ?
+      WHERE test_identity_id = ? AND target_subapp = 'auth-center-preview' AND revoked_at IS NULL
+    `).bind(now, id).run();
+  }
   await writeTestAudit(c, {
     testIdentityId: id,
     eventType: 'admin_update_test_identity',
     targetSubapp: nextTarget || undefined,
     success: true,
-    detail: { risk_reasons: getTestIdentityRiskReasons(input), fields: ['role', 'allowed_subapps', 'target_default_subapp', 'data_scope', 'max_api_calls_per_session'] },
+    detail: { risk_reasons: getTestIdentityRiskReasons(input), fields: ['role', 'allowed_subapps', 'target_default_subapp', 'data_scope', 'max_api_calls_per_session', 'preview_enabled'] },
   });
+  if (normalizePreviewEnabled(identity.preview_enabled) !== nextPreviewEnabled) {
+    await writeTestAudit(c, {
+      testIdentityId: id,
+      eventType: nextPreviewEnabled ? 'admin_enable_test_preview' : 'admin_disable_test_preview',
+      targetSubapp: 'auth-center-preview',
+      success: true,
+    });
+  }
   const row: any = await c.env.DB.prepare('SELECT * FROM test_identities WHERE id = ?').bind(id).first();
   return c.json({ ok: true, test_identity: normalizeTestIdentityRow(row), risk_reasons: getTestIdentityRiskReasons(input) });
 });
@@ -2455,7 +2785,13 @@ app.post('/api/admin/test-identities/:id/rotate-secret', async (c) => {
   await c.env.DB.prepare('UPDATE test_identities SET updated_at = ? WHERE id = ?').bind(now, id).run();
   await writeTestAudit(c, { testIdentityId: id, eventType: 'admin_rotate_test_secret', targetSubapp: identity.target_default_subapp, success: true });
   const normalized = normalizeTestIdentityRow({ ...identity, secret_prefix: secretPrefix });
-  return c.json({ ok: true, secret, secret_prefix: secretPrefix, agent_command: buildTestAgentCommand(c, normalized, secret) });
+  return c.json({
+    ok: true,
+    secret,
+    secret_prefix: secretPrefix,
+    agent_command: buildTestAgentCommand(c, normalized, secret),
+    preview_url: normalized.preview_enabled ? buildPreviewUrl(getRequestOrigin(c), normalized.name, secret) : null,
+  });
 });
 
 app.post('/api/admin/test-identities/:id/disable', async (c) => {
@@ -2547,7 +2883,14 @@ app.get('/admin/users', async (c) => {
 });
 
 app.post('/admin/users', async (c) => {
-  const { username, name, password, cookie_expiry_days = 7, birthday = null, avatar_data = null } = await c.req.json();
+  const body = await c.req.json();
+  const username = String(body?.username || '').trim();
+  const name = String(body?.name || '').trim();
+  const password = String(body?.password || '');
+  const cookieExpiryDays = Math.max(1, Number(body?.cookie_expiry_days) || 7);
+  const birthday = body?.birthday || null;
+  const avatarData = body?.avatar_data || null;
+  if (!username || !name || !password) return c.json({ error: 'Username, full name, and password are required' }, 400);
   const existingUser: any = await c.env.DB.prepare('SELECT uuid FROM users WHERE lower(username) = lower(?)').bind(username).first();
   if (existingUser) return c.json({ error: 'Username already exists' }, 409);
   const uuid = crypto.randomUUID();
@@ -2556,10 +2899,10 @@ app.post('/admin/users', async (c) => {
   let avatarKey: string | null = null;
 
   try {
-    avatarKey = await resolveAvatarKeyUpdate(c, uuid, avatar_data, null);
+    avatarKey = await resolveAvatarKeyUpdate(c, uuid, avatarData, null);
     await c.env.DB.prepare(
       "INSERT INTO users (id, uuid, username, name, role, status, auth_provider, email_verified, password_hash, password_salt, password_plain, cookie_expiry_days, birthday, avatar_data, avatar_key, updated_at) VALUES (?, ?, ?, ?, 'user', 'active', 'sso', 0, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
-    ).bind(uuid, uuid, username, name, hash, salt, password, cookie_expiry_days, birthday, null, avatarKey).run();
+    ).bind(uuid, uuid, username, name, hash, salt, password, cookieExpiryDays, birthday, null, avatarKey).run();
     return c.json({ success: true, uuid });
   } catch (e: any) {
     await deleteAvatarIfPresent(c, avatarKey);
@@ -2603,6 +2946,8 @@ app.put('/admin/users/:uuid/password', async (c) => {
     'UPDATE users SET password_hash = ?, password_salt = ?, password_plain = ?, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?'
   ).bind(hash, salt, password, uuid).run();
   await c.env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(uuid).run().catch(() => null);
+  await c.env.DB.prepare('UPDATE auth_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL').bind(uuid).run().catch(() => null);
+  await c.env.DB.prepare('UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE uuid = ? AND revoked_at IS NULL').bind(uuid).run().catch(() => null);
   return c.json({ success: true });
 });
 
@@ -3227,6 +3572,9 @@ app.get('/admin/stats/usage', async (c) => {
 
 // Fallback for SPA Routing (React Router)
 app.get('*', async (c) => {
+  if (new URL(c.req.url).pathname.startsWith('/preview')) {
+    setPreviewResponseHeaders(c);
+  }
   return await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url).toString(), c.req.raw));
 });
 
@@ -3234,5 +3582,7 @@ export default {
   fetch: app.fetch,
   async scheduled(_event: any, env: Bindings) {
     await cleanupExpiredAvatarDeletes(env);
+    await cleanupExpiredPendingRegistrations(env);
+    await releaseExpiredRegisterInvites(env);
   },
 };

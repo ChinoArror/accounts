@@ -1,21 +1,24 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { CheckSquare, Copy, MoreVertical, PauseCircle, PlayCircle, Square, Ticket, Trash2, X } from 'lucide-react';
+import { CheckCircle2, CheckSquare, Copy, MailPlus, MoreVertical, PauseCircle, PlayCircle, Send, Square, Ticket, Trash2, X } from 'lucide-react';
 
 type AppOption = {
   app_id: string;
   app_name: string;
 };
 
-type RegisterCodeRecord = {
+export type RegisterCodeRecord = {
   code: string;
   template_name: string | null;
   config_json: string;
-  status: 'unused' | 'used' | 'pause';
+  status: 'unused' | 'used' | 'pause' | 'reserved';
   used_by_uuid: string | null;
   used_by_username: string | null;
   used_at: string | null;
+  country_code?: string | null;
+  invited_email?: string | null;
+  invite_expires_at?: string | null;
   created_at: string;
 };
 
@@ -80,7 +83,7 @@ function parseRecordConfig(record: RegisterCodeRecord): any {
   }
 }
 
-function openRegisterCodeDetails(record: RegisterCodeRecord) {
+export function openRegisterCodeDetails(record: RegisterCodeRecord) {
   if (typeof document === 'undefined') return;
   document.getElementById('register-code-detail-portal')?.remove();
 
@@ -174,7 +177,12 @@ function openRegisterCodeDetails(record: RegisterCodeRecord) {
   };
   addCard('Status', record.status);
   addCard('Cookie Expiry', `${config.cookie_expiry_days || 7} days`);
+  addCard('Created', record.created_at ? new Date(record.created_at).toLocaleString() : 'Unknown');
   addCard('Used By', record.used_by_username || 'Not used yet');
+  addCard('Used At', record.used_at ? new Date(record.used_at).toLocaleString() : 'Not used yet');
+  addCard('Country', record.country_code || 'Unknown');
+  if (record.invited_email) addCard('Reserved For', record.invited_email);
+  if (record.invite_expires_at) addCard('Invite Expires', new Date(record.invite_expires_at).toLocaleString());
   scroll.append(grid);
 
   const permissionsTitle = document.createElement('p');
@@ -232,12 +240,17 @@ export default function RegisterCodeManager({
   const [copiedCode, setCopiedCode] = React.useState('');
   const [menuCode, setMenuCode] = React.useState('');
   const [detailCode, setDetailCode] = React.useState<RegisterCodeRecord | null>(null);
+  const [inviteCode, setInviteCode] = React.useState<RegisterCodeRecord | null>(null);
+  const [inviteEmail, setInviteEmail] = React.useState('');
+  const [inviteMessage, setInviteMessage] = React.useState('');
+  const [inviteError, setInviteError] = React.useState('');
+  const [inviteSending, setInviteSending] = React.useState(false);
   const [templateState, setTemplateState] = React.useState<Record<string, RegisterTemplateState>>({});
   const [defaultState, setDefaultState] = React.useState<Record<string, RegisterTemplateState>>({});
   const [defaultCookieExpiryDays, setDefaultCookieExpiryDays] = React.useState('7');
   const [externalRegistrationEnabled, setExternalRegistrationEnabled] = React.useState(true);
   const codesRef = React.useRef<RegisterCodeRecord[]>([]);
-  useBodyScrollLock(Boolean(detailCode));
+  useBodyScrollLock(Boolean(detailCode || inviteCode));
 
   React.useEffect(() => {
     codesRef.current = codes;
@@ -463,6 +476,36 @@ export default function RegisterCodeManager({
     }
   };
 
+  const openInvite = (record: RegisterCodeRecord) => {
+    setMenuCode('');
+    setInviteCode(record);
+    setInviteEmail('');
+    setInviteMessage('');
+    setInviteError('');
+  };
+
+  const sendInvite = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!inviteCode) return;
+    setInviteSending(true);
+    setInviteMessage('');
+    setInviteError('');
+    try {
+      const res = await authFetch(`/admin/auth/register-codes/${encodeURIComponent(inviteCode.code)}/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: inviteEmail }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.message || data.error || 'Unable to send invitation');
+      setInviteMessage(`Invitation sent. Expires ${data.expires_at_display}.`);
+      await fetchCodes();
+    } catch (err: any) {
+      setInviteError(err.message || 'Unable to send invitation');
+    } finally {
+      setInviteSending(false);
+    }
+  };
+
   const parseConfig = (record: RegisterCodeRecord) => {
     try {
       return JSON.parse(record.config_json);
@@ -475,6 +518,7 @@ export default function RegisterCodeManager({
     unused: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
     used: 'bg-blue-500/15 text-blue-300 border border-blue-500/30',
     pause: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+    reserved: 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30',
   };
 
   return (
@@ -718,7 +762,9 @@ export default function RegisterCodeManager({
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClassMap[record.status]}`}>{record.status}</span>
                     </div>
                     <div className="hidden w-40 items-center text-sm text-[var(--text-secondary)] md:flex">{record.template_name || 'Untitled'}</div>
-                    <div className="hidden w-44 items-center truncate text-sm text-[var(--text-secondary)] md:flex">{record.used_by_username || 'Not used yet'}</div>
+                    <div className="hidden w-44 items-center truncate text-sm text-[var(--text-secondary)] md:flex">
+                      {record.status === 'reserved' ? record.invited_email || 'Reserved' : record.used_by_username || 'Not used yet'}
+                    </div>
 
                     <div
                       className="relative flex items-center justify-end md:w-12"
@@ -736,7 +782,21 @@ export default function RegisterCodeManager({
                             <Copy className="h-4 w-4" />
                             {copiedCode === record.code ? 'Copied' : 'Copy'}
                           </button>
-                          {record.status !== 'used' ? (
+                          {record.status === 'unused' ? (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                openInvite(record);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--surface-alt)]"
+                            >
+                              <MailPlus className="h-4 w-4" />
+                              Email invite
+                            </button>
+                          ) : null}
+                          {record.status === 'unused' || record.status === 'pause' ? (
                             <button type="button" onClick={() => runBulkAction(record.status === 'pause' ? 'continue' : 'pause', [record.code])} className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--surface-alt)]">
                               {record.status === 'pause' ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
                               {record.status === 'pause' ? 'Continue' : 'Pause'}
@@ -805,6 +865,18 @@ export default function RegisterCodeManager({
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Used By</p>
                   <p className="mt-2 text-sm text-[var(--text-primary)]">{detailCode.used_by_username || 'Not used yet'}</p>
                 </div>
+                {detailCode.invited_email ? (
+                  <div className="ui-card-subtle p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Reserved For</p>
+                    <p className="mt-2 break-all text-sm text-[var(--text-primary)]">{detailCode.invited_email}</p>
+                  </div>
+                ) : null}
+                {detailCode.invite_expires_at ? (
+                  <div className="ui-card-subtle p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Invite Expires</p>
+                    <p className="mt-2 text-sm text-[var(--text-primary)]">{new Date(detailCode.invite_expires_at).toLocaleString()}</p>
+                  </div>
+                ) : null}
                 </div>
 
                 <div className="mt-6">
@@ -832,9 +904,66 @@ export default function RegisterCodeManager({
               </div>
             </motion.div>
           </motion.div>,
-          document.body
+          document.body,
+          'register-code-detail-modal'
         ) : null}
       </AnimatePresence>
+
+      {typeof document !== 'undefined' ? createPortal(
+        <AnimatePresence>
+          {inviteCode ? (
+            <motion.div
+            data-theme={getPortalTheme()}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center overscroll-none bg-black/45 p-2 backdrop-blur-sm md:items-center md:p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setInviteCode(null);
+            }}
+          >
+            <motion.div
+              initial={{ y: 28, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 18, opacity: 0 }}
+              onClick={(event) => event.stopPropagation()}
+              className="relative w-full max-w-md overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)] md:rounded-[var(--radius-xl)]"
+            >
+              <button type="button" aria-label="Close" className="ui-icon-button absolute right-4 top-4 z-20 bg-[var(--surface)] shadow-lg" onClick={() => setInviteCode(null)}>
+                <X className="h-4 w-4" />
+              </button>
+              <div className="ui-modal-scroll max-h-[92dvh] touch-pan-y overscroll-contain overflow-y-auto p-6 pb-7 pt-16">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[color-mix(in_srgb,var(--primary)_12%,var(--surface))] text-[var(--primary)]">
+                  <MailPlus className="h-6 w-6" />
+                </div>
+                <h3 className="mt-4 text-xl font-semibold text-[var(--text-primary)]">Email invitation</h3>
+                <p className="mt-2 break-all text-xs text-[var(--text-tertiary)]">{inviteCode.code}</p>
+                <p className="mt-4 text-sm leading-6 text-[var(--text-secondary)]">Valid for 7 days, until 00:00 on day 7. The code stays reserved for this email and is released if unused.</p>
+
+                {inviteMessage ? (
+                  <div className="mt-5 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--success)_30%,var(--border))] bg-[color-mix(in_srgb,var(--success)_10%,var(--surface))] p-4 text-sm text-[var(--success)]">
+                    <div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" /><span>{inviteMessage}</span></div>
+                  </div>
+                ) : (
+                  <form onSubmit={sendInvite} className="mt-5 space-y-4">
+                    <label className="block space-y-2 text-sm font-medium text-[var(--text-primary)]">
+                      <span>Email</span>
+                      <input type="email" required autoFocus value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="name@example.com" />
+                    </label>
+                    {inviteError ? <p className="text-sm text-[var(--danger)]">{inviteError}</p> : null}
+                    <button type="submit" className="ui-button-primary flex w-full items-center justify-center gap-2" disabled={inviteSending || !inviteEmail}>
+                      <Send className="h-4 w-4" /> {inviteSending ? 'Sending...' : 'Send invitation'}
+                    </button>
+                  </form>
+                )}
+              </div>
+            </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>,
+        document.body,
+        'register-code-invite-modal'
+      ) : null}
     </div>
   );
 }

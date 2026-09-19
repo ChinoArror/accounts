@@ -10,6 +10,7 @@ import {
   Clipboard,
   ExternalLink,
   KeyRound,
+  MonitorPlay,
   Search,
   Trash2,
   X,
@@ -51,6 +52,7 @@ type TestIdentityForm = {
   one_time_token_ttl_seconds: string;
   data_scope: string;
   max_api_calls_per_session: string;
+  preview_enabled: boolean;
   notes: string;
 };
 
@@ -89,6 +91,7 @@ function emptyForm(apps: any[]): TestIdentityForm {
     one_time_token_ttl_seconds: '60',
     data_scope: 'public_read',
     max_api_calls_per_session: '',
+    preview_enabled: false,
     notes: '',
   };
 }
@@ -105,16 +108,18 @@ function formFromIdentity(identity: any): TestIdentityForm {
     one_time_token_ttl_seconds: String(identity?.one_time_token_ttl_seconds || 60),
     data_scope: identity?.data_scope || 'public_read',
     max_api_calls_per_session: identity?.max_api_calls_per_session == null ? '' : String(identity.max_api_calls_per_session),
+    preview_enabled: Boolean(identity?.preview_enabled),
     notes: identity?.notes || '',
   };
 }
 
-function riskReasons(form: Pick<TestIdentityForm, 'data_scope' | 'role' | 'session_ttl_minutes' | 'allowed_subapps' | 'expires_at'>) {
+function riskReasons(form: Pick<TestIdentityForm, 'data_scope' | 'role' | 'session_ttl_minutes' | 'allowed_subapps' | 'expires_at' | 'preview_enabled'>) {
   const reasons: string[] = [];
   if (form.data_scope === 'public_write') reasons.push('public_write can modify public resources.');
   if (form.data_scope === 'private_read') reasons.push('private_read can read real user content.');
   if (form.data_scope === 'private_write') reasons.push('private_write can modify real app data.');
   if (form.role === 'admin') reasons.push('role=admin 会被子应用识别为管理员。');
+  if (form.preview_enabled) reasons.push('Preview 链接携带可交换浏览器 session 的长期测试 secret。');
   if (Number(form.session_ttl_minutes) > 60) reasons.push('测试 session 超过 60 分钟。');
   if (form.allowed_subapps.includes('*')) reasons.push('允许访问全部应用。');
   if (new Date(`${form.expires_at}T23:59:59`).getTime() - Date.now() > 7 * 86400 * 1000) {
@@ -315,6 +320,33 @@ function AppPicker({
   );
 }
 
+function PreviewSwitch({ enabled, onChange }: { enabled: boolean; onChange: (next: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={() => onChange(!enabled)}
+      className={`flex w-full items-center justify-between gap-4 rounded-[var(--radius-lg)] border p-3 text-left transition-colors ${
+        enabled
+          ? 'border-blue-300 bg-blue-50 text-blue-700'
+          : 'border-[var(--border)] bg-[var(--surface-soft)] text-[var(--text-secondary)]'
+      }`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <MonitorPlay className="h-5 w-5 shrink-0" />
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold">Preview</span>
+          <span className="mt-0.5 block text-xs font-normal">Browser entry</span>
+        </span>
+      </span>
+      <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${enabled ? 'bg-blue-600' : 'bg-[var(--border)]'}`}>
+        <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+      </span>
+    </button>
+  );
+}
+
 function SecretPanel({ result, onClose }: { result: any; onClose: () => void }) {
   if (!result) return null;
   return (
@@ -336,6 +368,18 @@ function SecretPanel({ result, onClose }: { result: any; onClose: () => void }) 
             <div className="flex h-full items-center">
               <CopyButton text={result.secret} label="Copy secret" />
             </div>
+          </div>
+        ) : null}
+        {result.preview_url ? (
+          <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-soft)] p-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-[var(--text-tertiary)]">Preview link</p>
+              <p className="mt-1 break-all font-mono text-sm text-[var(--text-primary)]">{result.preview_url}</p>
+            </div>
+            <CopyButton text={result.preview_url} label="Copy Preview link" />
+            <a href={result.preview_url} target="_blank" rel="noreferrer" className="ui-icon-button shrink-0" aria-label="Open Preview link" title="Open Preview link">
+              <ExternalLink className="h-4 w-4" />
+            </a>
           </div>
         ) : null}
         <pre className="ui-modal-scroll max-h-[32dvh] overflow-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-soft)] p-4 text-xs leading-6 text-[var(--text-primary)] sm:max-h-[46dvh]">{result.agent_command || ''}</pre>
@@ -452,6 +496,10 @@ function EditAccessDialog({
             placeholder="留空则无限"
           />
         </div>
+        <div className="space-y-2">
+          <FieldLabel>Preview</FieldLabel>
+          <PreviewSwitch enabled={form.preview_enabled} onChange={(preview_enabled) => setForm({ ...form, preview_enabled })} />
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <button type="button" onClick={onCancel} className="ui-button-secondary">取消</button>
           <button type="submit" className="ui-button-primary">Save</button>
@@ -468,6 +516,7 @@ function TestIdentityCard({
   onRevoke,
   onDelete,
 }: {
+  key?: React.Key;
   item: any;
   onRotate: () => void;
   onToggleStatus: () => void;
@@ -575,6 +624,7 @@ export function TestAccess({ authFetch, apps }: { authFetch: AuthFetch; apps: an
         target_default_subapp: next.target_default_subapp,
         data_scope: next.data_scope,
         max_api_calls_per_session: next.max_api_calls_per_session ? Number(next.max_api_calls_per_session) : null,
+        preview_enabled: next.preview_enabled,
       }),
     });
     const data = await res.json();
@@ -693,6 +743,10 @@ export function TestAccess({ authFetch, apps }: { authFetch: AuthFetch; apps: an
                 <input value={form.max_api_calls_per_session} onChange={(event) => setForm({ ...form, max_api_calls_per_session: event.target.value })} className="ui-input w-full" />
               </div>
             </div>
+            <div className="space-y-2">
+              <FieldLabel>Preview</FieldLabel>
+              <PreviewSwitch enabled={form.preview_enabled} onChange={(preview_enabled) => setForm({ ...form, preview_enabled })} />
+            </div>
             <p className="-mt-2 text-xs text-[var(--text-tertiary)]">API per session 留空则无限。</p>
             <div className="space-y-2">
               <FieldLabel>Notes</FieldLabel>
@@ -753,6 +807,18 @@ function IdentityActivity({ identity, activity }: { identity: any; activity: any
           ) : null}
           {activity?.agent_command ? (
             <pre className="ui-modal-scroll max-h-[260px] overflow-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-6 text-[var(--text-primary)]">{activity.agent_command}</pre>
+          ) : null}
+          {activity?.preview_url ? (
+            <div className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-[var(--text-tertiary)]">Preview link</p>
+                <p className="mt-1 break-all font-mono text-xs text-[var(--text-primary)]">{activity.preview_url}</p>
+              </div>
+              <CopyButton text={activity.preview_url} label="Copy Preview link" />
+              <a href={activity.preview_url} target="_blank" rel="noreferrer" className="ui-icon-button shrink-0" aria-label="Open Preview link" title="Open Preview link">
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -948,6 +1014,7 @@ export function TestIdentityDevPage() {
         target_default_subapp: next.target_default_subapp,
         data_scope: next.data_scope,
         max_api_calls_per_session: next.max_api_calls_per_session ? Number(next.max_api_calls_per_session) : null,
+        preview_enabled: next.preview_enabled,
       }),
     });
     const body = await res.json().catch(() => ({}));
@@ -983,7 +1050,7 @@ export function TestIdentityDevPage() {
         </header>
         {error ? <div className="rounded-[var(--radius-lg)] border border-red-200 bg-red-50 p-4 text-red-700">{error}</div> : null}
         {!data && !error ? <div className="ui-card p-5 text-[var(--text-tertiary)]">Loading...</div> : null}
-        {data ? <IdentityActivity identity={data.test_identity} activity={{ ...(data.activity || {}), secret: data.secret, agent_command: data.agent_command }} /> : null}
+        {data ? <IdentityActivity identity={data.test_identity} activity={{ ...(data.activity || {}), secret: data.secret, agent_command: data.agent_command, preview_url: data.preview_url }} /> : null}
       </div>
       <AnimatePresence>
         {editOpen && data?.test_identity ? (

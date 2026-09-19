@@ -1,366 +1,623 @@
-import React, { useState } from 'react';
-import { motion } from 'motion/react';
-import { Shield, Copy, Check, Eye, EyeOff, ArrowLeft, Github, ImagePlus, KeyRound } from 'lucide-react';
-import { useParams, Navigate, Link } from 'react-router-dom';
+import React from 'react';
+import { createPortal } from 'react-dom';
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  Github,
+  ImagePlus,
+  KeyRound,
+  LogOut,
+  Mail,
+  MailCheck,
+  MonitorSmartphone,
+  Pencil,
+  Shield,
+  TicketCheck,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { Link, Navigate, useParams } from 'react-router-dom';
+import DatePicker from './DatePicker';
+import { openRegisterCodeDetails, type RegisterCodeRecord } from './RegisterCodeManager';
+import { ThemeToggle, useThemeMode } from './theme';
 
-const API_BASE = '';
+type UserRecord = {
+  uuid: string;
+  id?: string;
+  username: string;
+  name: string;
+  email?: string | null;
+  email_verified?: number;
+  role?: string;
+  status?: string;
+  auth_provider?: string;
+  password_plain?: string | null;
+  cookie_expiry_days?: number;
+  created_at?: string;
+  updated_at?: string;
+  last_login_at?: string | null;
+  github_id?: string | null;
+  birthday?: string | null;
+  avatar_url?: string | null;
+};
+
+type SessionRecord = {
+  id: string;
+  user_agent?: string;
+  ip_address?: string;
+  browser?: string;
+  device_type?: string;
+  app_id?: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at?: string | null;
+};
+
+type DetailPayload = {
+  user: UserRecord;
+  sessions: SessionRecord[];
+  register_codes: RegisterCodeRecord[];
+};
+
+type ModalName = 'edit' | 'password' | null;
 
 function readFileAsDataUrl(file: File) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('Unable to read avatar image'));
-        reader.readAsDataURL(file);
-    });
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Unable to read avatar image'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return 'Not available';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function useBodyScrollLock() {
+  React.useEffect(() => {
+    const scrollY = window.scrollY;
+    const previous = {
+      bodyOverflow: document.body.style.overflow,
+      bodyPosition: document.body.style.position,
+      bodyTop: document.body.style.top,
+      bodyWidth: document.body.style.width,
+      htmlOverflow: document.documentElement.style.overflow,
+    };
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous.bodyOverflow;
+      document.body.style.position = previous.bodyPosition;
+      document.body.style.top = previous.bodyTop;
+      document.body.style.width = previous.bodyWidth;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+}
+
+function AdminModal({
+  title,
+  compact = false,
+  onClose,
+  children,
+}: {
+  title: string;
+  compact?: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useBodyScrollLock();
+  const theme = document.documentElement.dataset.theme || 'light';
+  return createPortal(
+    <motion.div
+      data-theme={theme}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center overscroll-none bg-black/45 backdrop-blur-sm md:items-center md:p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <motion.div
+        initial={{ y: 28, opacity: 0, scale: 0.99 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: 20, opacity: 0, scale: 0.99 }}
+        transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+        className={[
+          'relative w-full overflow-hidden border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)]',
+          compact
+            ? 'max-h-[88dvh] rounded-t-[1.75rem] rounded-b-[1.25rem] md:max-w-lg md:rounded-[var(--radius-xl)]'
+            : 'h-dvh rounded-none md:h-auto md:max-h-[92dvh] md:max-w-2xl md:rounded-[var(--radius-xl)]',
+        ].join(' ')}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="ui-icon-button absolute right-4 top-4 z-20 rounded-full bg-[var(--surface)] shadow-lg"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className={`ui-modal-scroll touch-pan-y overscroll-contain overflow-y-auto p-5 pb-7 pt-16 sm:p-6 sm:pt-16 ${compact ? 'max-h-[88dvh]' : 'h-dvh md:h-auto md:max-h-[92dvh]'}`}>
+          <h2 className="text-xl font-semibold text-[var(--text-primary)]">{title}</h2>
+          <div className="mt-6">{children}</div>
+        </div>
+      </motion.div>
+    </motion.div>,
+    document.body,
+  );
 }
 
 export default function UserProfile({ usernameOverride }: { usernameOverride?: string }) {
-    const params = useParams();
-    const username = usernameOverride || params.username;
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState('');
+  const params = useParams();
+  const username = usernameOverride || params.username || '';
+  const { theme, setTheme } = useThemeMode('light');
+  const [user, setUser] = React.useState<UserRecord | null>(null);
+  const [detail, setDetail] = React.useState<DetailPayload | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [notFound, setNotFound] = React.useState(false);
+  const [message, setMessage] = React.useState<{ text: string; tone: 'success' | 'danger' } | null>(null);
+  const [modal, setModal] = React.useState<ModalName>(null);
+  const [editInfo, setEditInfo] = React.useState({ name: '', cookie_expiry_days: 7, birthday: '' });
+  const [avatarData, setAvatarData] = React.useState<string | undefined>(undefined);
+  const [avatarPreview, setAvatarPreview] = React.useState('');
+  const [newPassword, setNewPassword] = React.useState('');
+  const [showPasswordInput, setShowPasswordInput] = React.useState(false);
+  const [showPlainPassword, setShowPlainPassword] = React.useState(false);
+  const [copied, setCopied] = React.useState('');
+  const isLogged = Boolean(localStorage.getItem('sso_admin_auth'));
 
-    const [users, setUsers] = useState<any[]>([]);
-    const [isLogged] = useState(!!localStorage.getItem('sso_admin_auth'));
-    const authHeader = localStorage.getItem('sso_admin_auth') || '';
-
-    const [editInfo, setEditInfo] = useState({ name: '', cookie_expiry_days: 7, birthday: '' });
-    const [newPassword, setNewPassword] = useState('');
-    const [showPasswordInput, setShowPasswordInput] = useState(false);
-    const [showPlainPassword, setShowPlainPassword] = useState(false);
-    const [copied, setCopied] = useState(false);
-    const [copiedGithub, setCopiedGithub] = useState(false);
-    const [copiedPasskey, setCopiedPasskey] = useState(false);
-    const [avatarData, setAvatarData] = useState<string | undefined>(undefined);
-    const [avatarPreview, setAvatarPreview] = useState('');
-
-    React.useEffect(() => {
-        if (isLogged) {
-            fetch(`${API_BASE}/admin/users`, {
-                headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' }
-            })
-                .then(res => res.json())
-                .then(data => {
-                    setUsers(data);
-                    const u = data.find((x: any) => x.username === username);
-                    if (u) {
-                        setEditInfo({ name: u.name, cookie_expiry_days: u.cookie_expiry_days, birthday: u.birthday || '' });
-                        setAvatarPreview(u.avatar_url || '');
-                        setAvatarData(undefined);
-                    }
-                });
-        }
-    }, [username, isLogged, authHeader]);
-
-    if (!isLogged) {
-        return <Navigate to="/" />;
+  const adminFetch = React.useCallback(async (path: string, options: RequestInit = {}) => {
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', localStorage.getItem('sso_admin_auth') || '');
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    const response = await fetch(path, { ...options, headers, credentials: 'include' });
+    if (response.status === 401) {
+      localStorage.removeItem('sso_admin_auth');
+      window.location.replace('/login');
     }
+    return response;
+  }, []);
 
-    const user = users.find(u => u.username === username);
-
-    const handleAvatarFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-
-        try {
-            const dataUrl = await readFileAsDataUrl(file);
-            setAvatarData(dataUrl);
-            setAvatarPreview(dataUrl);
-        } catch (err: any) {
-            setMessage(err.message || 'Unable to read avatar image');
-            setTimeout(() => setMessage(''), 3000);
-        }
-    };
-
-    const handleRemoveAvatar = () => {
-        setAvatarData('');
-        setAvatarPreview('');
-    };
-
-    if (!user && users.length > 0) {
-        return (
-            <div className="min-h-screen bg-[#0B0F19] text-white flex items-center justify-center p-8">
-                <div className="text-center">
-                    <p className="text-2xl font-bold mb-4">User not found.</p>
-                    <Link to="/" className="text-purple-400 hover:underline">← Back to Manager</Link>
-                </div>
-            </div>
-        );
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const usersResponse = await adminFetch('/admin/users');
+      if (!usersResponse.ok) throw new Error('Unable to load user');
+      const users = await usersResponse.json();
+      const selected = users.find((item: UserRecord) => item.username.toLowerCase() === username.toLowerCase());
+      if (!selected) {
+        setNotFound(true);
+        return;
+      }
+      const detailResponse = await adminFetch(`/admin/auth/users/${encodeURIComponent(selected.uuid)}/detail`);
+      const detailData = await detailResponse.json();
+      if (!detailResponse.ok) throw new Error(detailData.error || 'Unable to load user details');
+      const mergedUser = { ...detailData.user, ...selected };
+      setUser(mergedUser);
+      setDetail({ ...detailData, user: mergedUser });
+      setEditInfo({
+        name: mergedUser.name || '',
+        cookie_expiry_days: Number(mergedUser.cookie_expiry_days || 7),
+        birthday: mergedUser.birthday || '',
+      });
+      setAvatarPreview(mergedUser.avatar_url || '');
+      setAvatarData(undefined);
+      setNotFound(false);
+    } catch (error: any) {
+      setMessage({ text: error.message || 'Unable to load user details', tone: 'danger' });
+    } finally {
+      setLoading(false);
     }
+  }, [adminFetch, username]);
 
-    const handleUpdateInfo = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setLoading(true);
-        const body: Record<string, unknown> = {
-            ...editInfo,
-            username,
-            birthday: editInfo.birthday || null,
-        };
-        if (avatarData !== undefined) {
-            body.avatar_data = avatarData;
-        }
-        const res = await fetch(`${API_BASE}/admin/users/${user.uuid}`, {
-            method: 'PUT',
-            headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-        if (res.ok) {
-            setMessage('Info updated successfully!');
-            const r = await fetch(`${API_BASE}/admin/users`, { headers: { 'Authorization': authHeader } });
-            if (r.ok) {
-                const refreshed = await r.json();
-                setUsers(refreshed);
-                const updatedUser = refreshed.find((x: any) => x.username === username);
-                if (updatedUser) {
-                    setAvatarPreview(updatedUser.avatar_url || '');
-                    setEditInfo({ name: updatedUser.name, cookie_expiry_days: updatedUser.cookie_expiry_days, birthday: updatedUser.birthday || '' });
-                    setAvatarData(undefined);
-                }
-            }
-            setTimeout(() => setMessage(''), 3000);
-        }
-        setLoading(false);
-    };
+  React.useEffect(() => {
+    if (isLogged) void load();
+  }, [isLogged, load]);
 
-    const handleUpdatePassword = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newPassword) return;
-        setLoading(true);
-        const res = await fetch(`${API_BASE}/admin/users/${user.uuid}/password`, {
-            method: 'PUT',
-            headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: newPassword })
-        });
-        if (res.ok) {
-            setMessage('Password updated successfully!');
-            setNewPassword('');
-            // Refresh user list to get updated password_plain
-            const r = await fetch(`${API_BASE}/admin/users`, { headers: { 'Authorization': authHeader } });
-            if (r.ok) setUsers(await r.json());
-            setTimeout(() => setMessage(''), 3000);
-        }
-        setLoading(false);
-    };
+  if (!isLogged) return <Navigate to="/login" replace />;
 
-    const handleCopyLink = () => {
-        const link = `${window.location.origin}/${user?.uuid}/change-password`;
-        navigator.clipboard.writeText(link);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
+  const notify = (text: string, tone: 'success' | 'danger' = 'success') => {
+    setMessage({ text, tone });
+    window.setTimeout(() => setMessage(null), 3200);
+  };
 
+  const copyLink = async (kind: 'password' | 'github' | 'passkey') => {
+    if (!user) return;
+    const path = kind === 'password' ? 'change-password' : kind === 'github' ? 'sso-binding' : 'passkey';
+    await navigator.clipboard.writeText(`${window.location.origin}/${user.uuid}/${path}`);
+    setCopied(kind);
+    window.setTimeout(() => setCopied(''), 1800);
+  };
+
+  const saveInfo = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!user) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        ...editInfo,
+        username: user.username,
+        birthday: editInfo.birthday || null,
+      };
+      if (avatarData !== undefined) body.avatar_data = avatarData;
+      const response = await adminFetch(`/admin/users/${encodeURIComponent(user.uuid)}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to update user');
+      setModal(null);
+      await load();
+      notify('User information updated.');
+    } catch (error: any) {
+      notify(error.message || 'Unable to update user', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!user || !newPassword) return;
+    setBusy(true);
+    try {
+      const response = await adminFetch(`/admin/users/${encodeURIComponent(user.uuid)}/password`, {
+        method: 'PUT',
+        body: JSON.stringify({ password: newPassword }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to overwrite password');
+      setNewPassword('');
+      setModal(null);
+      await load();
+      notify('Password overwritten and active sessions revoked.');
+    } catch (error: any) {
+      notify(error.message || 'Unable to overwrite password', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyEmail = async () => {
+    if (!user) return;
+    setBusy(true);
+    try {
+      const response = await adminFetch(`/admin/auth/users/${encodeURIComponent(user.uuid)}/verify-email`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to verify email');
+      await load();
+      notify(data.already_verified ? 'Email was already verified.' : 'Email verified. Welcome email queued.');
+    } catch (error: any) {
+      notify(error.message || 'Unable to verify email', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeSession = async (sessionId?: string) => {
+    if (!user) return;
+    setBusy(true);
+    try {
+      const path = sessionId
+        ? `/admin/auth/users/${encodeURIComponent(user.uuid)}/sessions/${encodeURIComponent(sessionId)}/revoke`
+        : `/admin/auth/users/${encodeURIComponent(user.uuid)}/revoke-sessions`;
+      const response = await adminFetch(path, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to sign out device');
+      await load();
+      notify(sessionId ? 'Device signed out.' : 'All devices signed out.');
+    } catch (error: any) {
+      notify(error.message || 'Unable to sign out device', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAvatarFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setAvatarData(dataUrl);
+      setAvatarPreview(dataUrl);
+    } catch (error: any) {
+      notify(error.message || 'Unable to read avatar image', 'danger');
+    }
+  };
+
+  if (loading) {
     return (
-        <div className="min-h-screen bg-[#0B0F19] text-white p-4 md:p-8 pb-20">
-            <div className="fixed top-0 left-[-10%] w-[40%] h-[40%] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none" />
-            <div className="fixed bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[120px] pointer-events-none" />
-
-            <div className="w-full max-w-2xl mx-auto relative z-10 mt-6">
-                {/* Header */}
-                <div className="flex items-center gap-4 mb-8">
-                    <Link to="/" className="p-2 bg-white/5 hover:bg-white/10 rounded-xl transition-colors text-white/70 hover:text-white border border-white/10">
-                        <ArrowLeft className="w-5 h-5" />
-                    </Link>
-                    <div>
-                        <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
-                            <Shield className="text-purple-400 w-6 h-6 md:w-7 md:h-7 shrink-0" />
-                            <span className="truncate">@{username}</span>
-                        </h1>
-                        <p className="text-white/40 text-sm mt-0.5">User Profile & Administration</p>
-                    </div>
-                </div>
-
-                {message && (
-                    <div className="mb-6 p-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 rounded-xl text-sm font-medium">
-                        {message}
-                    </div>
-                )}
-
-                {/* Avatar Card */}
-                <div className="mb-6 flex flex-col sm:flex-row items-center sm:items-start gap-6 bg-white/5 p-6 rounded-3xl border border-white/10 text-center sm:text-left">
-                    {avatarPreview ? (
-                        <img src={avatarPreview} alt={`${user?.name || user?.username} avatar`} className="w-20 h-20 rounded-full object-cover shadow-lg shadow-purple-500/20 shrink-0" />
-                    ) : (
-                        <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-purple-500 to-blue-500 flex items-center justify-center text-3xl font-bold shadow-lg shadow-purple-500/20 shrink-0">
-                            {user?.name?.[0]?.toUpperCase() || '?'}
-                        </div>
-                    )}
-                    <div className="flex-1 w-full min-w-0">
-                        <p className="text-white/40 text-xs mb-1">Avatar placeholder · feature reserved</p>
-                        <h3 className="text-xl font-bold truncate">{user?.name}</h3>
-                        <p className="text-white/30 text-xs font-mono mt-1 mb-2 truncate">{user?.uuid}</p>
-                        <p className="text-white/45 text-sm mb-3">Birthday: {user?.birthday || 'Not set'}</p>
-
-                        {user?.github_id ? (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-medium">
-                                <Github className="w-3.5 h-3.5" /> Bound to GitHub ({user.github_id})
-                            </div>
-                        ) : (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 text-white/50 border border-white/10 text-xs font-medium">
-                                <Github className="w-3.5 h-3.5" /> No GitHub Bound
-                            </div>
-                        )}
-
-                        {/* Password reveal area */}
-                        <div className="relative mt-3">
-                            <div className="bg-black/30 border border-white/10 rounded-xl px-4 pr-12 py-3 flex items-center gap-3">
-                                <span className="text-white/40 text-xs shrink-0 font-semibold tracking-widest">PASS</span>
-                                <span className={`text-sm font-mono transition-all ${showPlainPassword ? 'text-emerald-300' : 'text-white/50 tracking-[0.4em]'}`}>
-                                    {showPlainPassword
-                                        ? (user?.password_plain || '(not recorded — overwrite to save)')
-                                        : '••••••••'}
-                                </span>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => setShowPlainPassword(!showPlainPassword)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 hover:bg-white/10 rounded-lg transition-colors text-purple-300/60 hover:text-purple-300"
-                                title="Reveal plaintext password"
-                            >
-                                {showPlainPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Two-column forms */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Edit Info */}
-                    <form onSubmit={handleUpdateInfo} className="bg-white/5 border border-white/10 p-6 rounded-3xl space-y-4">
-                        <h3 className="font-semibold text-base mb-4 text-white/80">Edit Information</h3>
-                        <div>
-                            <label className="text-xs text-white/40 block mb-1.5 font-medium uppercase tracking-wider">Full Name</label>
-                            <input
-                                type="text" required value={editInfo.name}
-                                onChange={e => setEditInfo({ ...editInfo, name: e.target.value })}
-                                className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none transition-all text-white placeholder-white/30"
-                            />
-                        </div>
-                        <div>
-                            <label className="text-xs text-white/40 block mb-1.5 font-medium uppercase tracking-wider">Session Expiry (Days)</label>
-                            <input
-                                type="number" required value={editInfo.cookie_expiry_days}
-                                onChange={e => setEditInfo({ ...editInfo, cookie_expiry_days: Number(e.target.value) })}
-                                className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none transition-all text-white"
-                            />
-                        </div>
-                        <div>
-                            <label className="text-xs text-white/40 block mb-1.5 font-medium uppercase tracking-wider">Birthday</label>
-                            <input
-                                type="date" value={editInfo.birthday}
-                                onChange={e => setEditInfo({ ...editInfo, birthday: e.target.value })}
-                                className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none transition-all text-white"
-                            />
-                        </div>
-                        <div className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-4">
-                            <label className="text-xs text-white/40 block font-medium uppercase tracking-wider">Avatar</label>
-                            <div className="flex items-center gap-4">
-                                {avatarPreview ? (
-                                    <img src={avatarPreview} alt={`${user?.name || user?.username} avatar preview`} className="w-14 h-14 rounded-full object-cover" />
-                                ) : (
-                                    <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center text-white/40 font-semibold">
-                                        {user?.name?.[0]?.toUpperCase() || '?'}
-                                    </div>
-                                )}
-                                <div className="flex flex-wrap gap-2">
-                                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10">
-                                        <ImagePlus className="w-4 h-4" />
-                                        Upload
-                                        <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} />
-                                    </label>
-                                    <button
-                                        type="button"
-                                        onClick={handleRemoveAvatar}
-                                        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/70 hover:bg-white/10"
-                                    >
-                                        Remove
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                            className="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-purple-500/20 transition-all text-sm mt-2">
-                            {loading ? 'Saving...' : 'Update Info'}
-                        </motion.button>
-                    </form>
-
-                    {/* Reset Password */}
-                    <form onSubmit={handleUpdatePassword} className="bg-white/5 border border-white/10 p-6 rounded-3xl space-y-4">
-                        <h3 className="font-semibold text-base mb-4 text-white/80">Reset Password</h3>
-                        <p className="text-xs text-white/40 leading-relaxed">
-                            Admin override: sets a new password directly. The plaintext will be recorded for admin viewing.
-                        </p>
-                        <div className="relative">
-                            <input
-                                type={showPasswordInput ? 'text' : 'password'}
-                                placeholder="New Password"
-                                value={newPassword}
-                                onChange={e => setNewPassword(e.target.value)}
-                                className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none pr-12 transition-all text-white placeholder-white/30"
-                            />
-                            <button type="button" onClick={() => setShowPasswordInput(!showPasswordInput)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-white/40 hover:text-white transition-colors">
-                                {showPasswordInput ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                            </button>
-                        </div>
-                        <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-500/20 transition-all text-sm">
-                            Overwrite Password
-                        </motion.button>
-
-                        <div className="pt-4 border-t border-white/10">
-                            <motion.button type="button" onClick={handleCopyLink}
-                                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                                className="w-full flex items-center justify-center gap-2 bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-500/20 transition-all text-sm">
-                                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                                {copied ? 'Copied!' : 'Copy Self-Service Link'}
-                            </motion.button>
-                        </div>
-                    </form>
-                </div>
-
-                {/* SSO Integrations */}
-                <div className="mt-6 bg-white/5 border border-white/10 p-6 rounded-3xl space-y-6">
-                    <div>
-                        <h3 className="font-semibold text-base mb-2 text-white/80 flex items-center gap-2"><Github className="w-5 h-5" /> GitHub SSO Binding</h3>
-                        <p className="text-sm text-white/60 mb-4">
-                            Allow this user to log in using their GitHub account. Send them the binding link.
-                        </p>
-                        <div className="md:w-1/2">
-                            <motion.button type="button" onClick={() => {
-                                const link = `${window.location.origin}/${user?.uuid}/sso-binding`;
-                                navigator.clipboard.writeText(link);
-                                setCopiedGithub(true);
-                                setTimeout(() => setCopiedGithub(false), 2000);
-                            }}
-                                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                                className="w-full flex items-center justify-center gap-2 bg-[#171515] hover:bg-[#201e1e] text-white font-semibold py-3 rounded-xl shadow-lg transition-all text-sm border border-white/10">
-                                {copiedGithub ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                                {copiedGithub ? 'Copied Bind Link!' : 'Copy GitHub Bind Link'}
-                            </motion.button>
-                        </div>
-                    </div>
-
-                    <div className="border-t border-white/10 pt-6">
-                        <h3 className="font-semibold text-base mb-2 text-white/80 flex items-center gap-2"><KeyRound className="w-5 h-5 text-indigo-400" /> Passkey (WebAuthn) Management</h3>
-                        <p className="text-sm text-white/60 mb-4">
-                            Allow this user to set up Passkeys for passwordless secure login.
-                        </p>
-                        <div className="md:w-1/2">
-                            <motion.button type="button" onClick={() => {
-                                const link = `${window.location.origin}/${user?.uuid}/passkey`;
-                                navigator.clipboard.writeText(link);
-                                setCopiedPasskey(true);
-                                setTimeout(() => setCopiedPasskey(false), 2000);
-                            }}
-                                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                                className="w-full flex items-center justify-center gap-2 bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-white font-semibold py-3 rounded-xl shadow-lg transition-all text-sm border border-indigo-500/30">
-                                {copiedPasskey ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                                {copiedPasskey ? 'Copied Passkey Link!' : 'Copy Passkey Manage Link'}
-                            </motion.button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+      <div data-theme={theme} className="dashboard-theme fixed inset-0 grid place-items-center bg-[var(--bg)]">
+        <div className="text-sm font-medium text-[var(--text-secondary)]">Loading user details...</div>
+      </div>
     );
+  }
+
+  if (notFound || !user) {
+    return (
+      <div data-theme={theme} className="dashboard-theme fixed inset-0 grid place-items-center bg-[var(--bg)] p-4">
+        <div className="ui-card w-full max-w-sm p-6 text-center">
+          <h1 className="text-xl font-semibold text-[var(--text-primary)]">User not found</h1>
+          <Link to="/dash" className="ui-button-primary mt-5 inline-flex items-center gap-2 no-underline">
+            <ArrowLeft className="h-4 w-4" /> Back to dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const emailState = !user.email ? 'Unbound' : Number(user.email_verified || 0) === 1 ? 'Verified' : 'Verifying';
+  const activeSessions = (detail?.sessions || []).filter((session) => !session.revoked_at && Date.parse(session.expires_at) > Date.now());
+
+  return (
+    <div data-theme={theme} className="dashboard-theme min-h-dvh bg-[var(--bg)] text-[var(--text-primary)]">
+      <main className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 md:py-8">
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <Link to="/dash" className="ui-button-secondary inline-flex items-center gap-2 no-underline">
+            <ArrowLeft className="h-4 w-4" /> Dashboard
+          </Link>
+          <ThemeToggle theme={theme} onChange={setTheme} />
+        </div>
+
+        <motion.header
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="ui-page-header p-5 sm:p-6"
+        >
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" className="h-20 w-20 shrink-0 rounded-2xl object-cover shadow-[var(--shadow-card)]" />
+            ) : (
+              <div className="ui-logo-badge h-20 w-20 shrink-0 text-2xl font-bold">{user.name?.[0]?.toUpperCase() || '?'}</div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="break-words text-2xl font-bold sm:text-3xl">{user.name}</h1>
+                <span className="rounded-full bg-[var(--surface-alt)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">{user.status || 'active'}</span>
+                <span className="rounded-full bg-[color-mix(in_srgb,var(--primary)_10%,var(--surface))] px-3 py-1 text-xs font-semibold text-[var(--primary)]">{user.role || 'user'}</span>
+              </div>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">@{user.username}</p>
+              <p className="mt-2 break-all font-mono text-xs text-[var(--text-tertiary)]">{user.uuid}</p>
+            </div>
+          </div>
+        </motion.header>
+
+        {message ? (
+          <div
+            className="mt-4 rounded-[var(--radius-md)] border px-4 py-3 text-sm font-medium"
+            style={{
+              borderColor: `color-mix(in srgb, var(--${message.tone === 'success' ? 'success' : 'danger'}) 34%, var(--border))`,
+              color: `var(--${message.tone === 'success' ? 'success' : 'danger'})`,
+              background: `color-mix(in srgb, var(--${message.tone === 'success' ? 'success' : 'danger'}) 8%, var(--surface))`,
+            }}
+          >
+            {message.text}
+          </div>
+        ) : null}
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1.05fr_1.95fr]">
+          <div className="space-y-5">
+            <section className="ui-card p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Account</h2>
+                <Shield className="h-5 w-5 text-[var(--primary)]" />
+              </div>
+              <div className="mt-4 grid gap-3">
+                <div className="ui-card-subtle p-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Provider</p>
+                  <p className="mt-2 text-sm font-medium">{user.auth_provider || 'legacy'}</p>
+                </div>
+                <div className="ui-card-subtle p-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Session expiry</p>
+                  <p className="mt-2 text-sm font-medium">{user.cookie_expiry_days || 7} days</p>
+                </div>
+                <div className="ui-card-subtle p-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Created</p>
+                  <p className="mt-2 text-sm font-medium">{formatDate(user.created_at)}</p>
+                </div>
+                <div className="ui-card-subtle p-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Last login</p>
+                  <p className="mt-2 text-sm font-medium">{formatDate(user.last_login_at)}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="ui-card p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Password</h2>
+                <button type="button" className="ui-icon-button" onClick={() => setShowPlainPassword((value) => !value)} aria-label="Toggle password">
+                  {showPlainPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <div className="mt-4 break-all rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3 font-mono text-sm">
+                {showPlainPassword ? user.password_plain || 'Not recorded' : '••••••••••••'}
+              </div>
+            </section>
+          </div>
+
+          <div className="space-y-5">
+            <section className="ui-card p-5">
+              <h2 className="font-semibold">Actions</h2>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <button type="button" className="ui-button-primary inline-flex items-center justify-center gap-2" onClick={() => setModal('edit')}>
+                  <Pencil className="h-4 w-4" /> Edit information
+                </button>
+                <button type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={() => setModal('password')}>
+                  <KeyRound className="h-4 w-4" /> Overwrite password
+                </button>
+                {[
+                  { id: 'password' as const, label: 'Password link', icon: Copy },
+                  { id: 'github' as const, label: 'GitHub link', icon: Github },
+                  { id: 'passkey' as const, label: 'Passkey link', icon: KeyRound },
+                ].map((action) => (
+                  <button key={action.id} type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={() => copyLink(action.id)}>
+                    {copied === action.id ? <Check className="h-4 w-4 text-[var(--success)]" /> : <action.icon className="h-4 w-4" />}
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="ui-card p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {emailState === 'Verified' ? <MailCheck className="h-5 w-5 text-[var(--success)]" /> : <Mail className="h-5 w-5 text-[var(--primary)]" />}
+                  <h2 className="font-semibold">Email</h2>
+                </div>
+                <span
+                  className="rounded-full px-3 py-1 text-xs font-semibold"
+                  style={{
+                    color: emailState === 'Verified' ? 'var(--success)' : emailState === 'Verifying' ? 'var(--warning)' : 'var(--text-secondary)',
+                    background: `color-mix(in srgb, ${emailState === 'Verified' ? 'var(--success)' : emailState === 'Verifying' ? 'var(--warning)' : 'var(--text-secondary)'} 10%, var(--surface))`,
+                  }}
+                >
+                  {emailState}
+                </span>
+              </div>
+              <p className="mt-4 break-all text-sm text-[var(--text-secondary)]">{user.email || 'No email bound'}</p>
+              {emailState === 'Verifying' ? (
+                <button type="button" className="ui-button-primary mt-4 inline-flex items-center gap-2" onClick={verifyEmail} disabled={busy}>
+                  <MailCheck className="h-4 w-4" /> Approve verification
+                </button>
+              ) : null}
+            </section>
+
+            <section className="ui-card overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-5">
+                <div className="flex items-center gap-2">
+                  <MonitorSmartphone className="h-5 w-5 text-[var(--primary)]" />
+                  <h2 className="font-semibold">Signed-in devices</h2>
+                  <span className="text-sm text-[var(--text-tertiary)]">{activeSessions.length}</span>
+                </div>
+                {activeSessions.length ? (
+                  <button type="button" className="ui-button-secondary inline-flex items-center gap-2 text-[var(--danger)]" onClick={() => revokeSession()} disabled={busy}>
+                    <LogOut className="h-4 w-4" /> Sign out all
+                  </button>
+                ) : null}
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {activeSessions.length ? activeSessions.map((session) => (
+                  <div key={session.id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{session.browser || session.device_type || 'Device'}</span>
+                        <span className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">{session.app_id || 'auth-center'}</span>
+                      </div>
+                      <p className="mt-1 break-all text-xs text-[var(--text-secondary)]">{session.ip_address || 'IP unavailable'}</p>
+                      <p className="mt-1 text-xs text-[var(--text-tertiary)]">{formatDate(session.created_at)} · expires {formatDate(session.expires_at)}</p>
+                    </div>
+                    <button type="button" className="ui-button-secondary shrink-0 text-[var(--danger)]" onClick={() => revokeSession(session.id)} disabled={busy}>Force sign out</button>
+                  </div>
+                )) : (
+                  <div className="p-5 text-sm text-[var(--text-secondary)]">No active devices.</div>
+                )}
+              </div>
+            </section>
+
+            <section className="ui-card overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-[var(--border)] p-5">
+                <TicketCheck className="h-5 w-5 text-[var(--primary)]" />
+                <h2 className="font-semibold">Register code usage</h2>
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {detail?.register_codes?.length ? detail.register_codes.map((record) => (
+                  <div key={`${record.code}-${record.used_at}`} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="break-all font-mono text-sm font-semibold">{record.code}</p>
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">{formatDate(record.used_at)} · {record.country_code || 'Unknown country'}</p>
+                    </div>
+                    <button type="button" className="ui-button-secondary shrink-0" onClick={() => openRegisterCodeDetails(record)}>Details</button>
+                  </div>
+                )) : (
+                  <div className="p-5 text-sm text-[var(--text-secondary)]">No register code used.</div>
+                )}
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+
+      <AnimatePresence>
+        {modal === 'edit' ? (
+          <AdminModal title="Edit information" onClose={() => setModal(null)}>
+            <form onSubmit={saveInfo} className="space-y-5">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Full name</label>
+                <input required value={editInfo.name} onChange={(event) => setEditInfo((current) => ({ ...current, name: event.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Session expiry days</label>
+                <input type="number" min={1} required value={editInfo.cookie_expiry_days} onChange={(event) => setEditInfo((current) => ({ ...current, cookie_expiry_days: Number(event.target.value) }))} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Birthday</label>
+                <DatePicker value={editInfo.birthday} onChange={(birthday) => setEditInfo((current) => ({ ...current, birthday }))} />
+              </div>
+              <div className="space-y-3">
+                <label className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Avatar</label>
+                <div className="ui-card-subtle flex flex-col gap-4 p-4 sm:flex-row sm:items-center">
+                  {avatarPreview ? (
+                    <img src={avatarPreview} alt="" className="h-16 w-16 rounded-2xl object-cover" />
+                  ) : (
+                    <div className="ui-logo-badge h-16 w-16 text-lg font-bold">{editInfo.name?.[0]?.toUpperCase() || '?'}</div>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <label className="ui-button-secondary inline-flex cursor-pointer items-center gap-2">
+                      <ImagePlus className="h-4 w-4" /> Upload
+                      <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} />
+                    </label>
+                    <button type="button" className="ui-button-secondary inline-flex items-center gap-2 text-[var(--danger)]" onClick={() => {
+                      setAvatarData('');
+                      setAvatarPreview('');
+                    }}>
+                      <Trash2 className="h-4 w-4" /> Remove
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button className="ui-button-primary w-full" disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
+            </form>
+          </AdminModal>
+        ) : null}
+
+        {modal === 'password' ? (
+          <AdminModal title="Overwrite password" compact onClose={() => setModal(null)}>
+            <form onSubmit={savePassword} className="space-y-5">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">New password</label>
+                <div className="relative">
+                  <input
+                    type={showPasswordInput ? 'text' : 'password'}
+                    required
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    className="pr-12"
+                  />
+                  <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-[var(--text-secondary)]" onClick={() => setShowPasswordInput((value) => !value)}>
+                    {showPasswordInput ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+              <button className="ui-button-primary w-full" disabled={busy}>{busy ? 'Saving...' : 'Save password'}</button>
+            </form>
+          </AdminModal>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
 }

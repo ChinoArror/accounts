@@ -43,6 +43,7 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。登录设备会显示发起登录的 `app_id`，直接在 Auth Center 中发起的登录记为 `auth-center`。
 - `/dash`：管理员后台。
 - `/dev/@name`：测试身份详情页，供 admin 查看活动和日志。
+- `/preview`：仅供测试身份使用的浏览器 Preview 门户，不提供普通登录入口。
 
 ## 管理员后台
 
@@ -70,6 +71,12 @@ Permissions 页使用真实 D1 数据，来源包括 `users`、`apps`、`user_ap
 - exchange 返回一次性 `login_url`，默认 60 秒内必须打开，且只能消费一次。
 - 60 秒只限制登录链接消费时间，不限制测试时长。
 - 登录后的测试 session 默认 30 分钟，可按测试身份配置。
+- Preview 默认关闭。管理员开启后，创建、轮换 secret 和详情页面会展示同一个测试身份 secret 对应的 Preview 链接。
+- Preview 链接格式为 `https://accounts.aryuki.com/preview#name=...&secret=...`。secret 位于 fragment，不使用 query/path；页面会在交换 session 前立即从地址栏清除 fragment。
+- Preview 使用独立的 `test_preview_session` Cookie，属性为 HttpOnly、Secure、SameSite=Strict、Path=/preview，不会覆盖普通用户或管理员的 `sso_session`。
+- 人工 QA 可直接使用 Preview，不必运行 CLI；agent、CI 和脚本自动化仍建议继续使用 CLI 或 `/api/test-auth/exchange`。
+- Preview 只显示该测试身份真实允许且 active 的 D1 应用；点击后会在新标签页打开对应 subapp，并签发与原 one-time login 兼容的 app 专用测试 JWT/session。原页面的应用卡片会保留 2 秒启动反馈，之后自动恢复可点击状态。
+- 关闭 Preview 会立刻撤销 Preview session；轮换 secret 会使旧 Preview 链接失效，但已建立 session 保持至过期或管理员手动撤销。
 - JWT 包含 `identity_type=test`、`test_session=true`、`allowed_subapps`、`data_scope`、`data_scope_permissions` 和 `session_id`。
 - 旧 subapp 保持兼容，完成 JWT 校验后可能默认全可见。
 - 新 subapp 应读取 `identity_type`、`data_scope` 和 `data_scope_permissions`，主动限制 public/private scope。公共权限默认包含同级私有权限，例如 `public_read` 包含 `private_read`，但不包含 `private_write`。
@@ -204,6 +211,7 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-test-identity-preview-2026-09-19.sql
 ```
 
 ## 头像编辑

@@ -9,7 +9,7 @@ type RegistrationMode = 'open' | 'closed' | 'time_window' | 'invite_only';
 const EMAIL_DOMAIN = 'aryuki.com';
 const ACCESS_TOKEN_TTL_DEFAULT = 3600;
 const REFRESH_TOKEN_TTL_DEFAULT = 2592000;
-const VERIFY_TOKEN_MINUTES = 60;
+const VERIFY_TOKEN_MINUTES = 24 * 60;
 const RESET_TOKEN_MINUTES = 30;
 const OTP_TOKEN_MINUTES = 10;
 const PASSWORD_PBKDF2_ITERATIONS = 100000;
@@ -22,6 +22,15 @@ function addMinutes(minutes: number) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
+export function registerInviteExpiry(nowMs = Date.now()) {
+  const chinaNow = new Date(nowMs + 8 * 60 * 60 * 1000);
+  return new Date(Date.UTC(
+    chinaNow.getUTCFullYear(),
+    chinaNow.getUTCMonth(),
+    chinaNow.getUTCDate() + 7,
+  ) - 8 * 60 * 60 * 1000).toISOString();
+}
+
 function envString(c: Ctx, key: string, fallback = '') {
   return String(c.env?.[key] ?? fallback);
 }
@@ -29,6 +38,10 @@ function envString(c: Ctx, key: string, fallback = '') {
 function envInt(c: Ctx, key: string, fallback: number) {
   const value = Number(c.env?.[key]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function adminPassword(c: Ctx) {
+  return envString(c, 'ADMIN_PASSWORD_SECRET') || envString(c, 'ADMIN_PASSWORD');
 }
 
 function getPublicBaseUrl(c: Ctx) {
@@ -60,6 +73,11 @@ async function hashSecret(c: Ctx, value: string) {
 
 async function ipHash(c: Ctx) {
   return hashSecret(c, getClientIp(c));
+}
+
+function countryCode(c: Ctx) {
+  const value = String(c.req.header('CF-IPCountry') || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(value) ? value : null;
 }
 
 function safeJson(input: unknown) {
@@ -246,7 +264,32 @@ function containsAdmin(value: string) {
   return /admin/i.test(value || '');
 }
 
+export async function releaseExpiredRegisterInvites(env: any) {
+  if (!env?.DB) return 0;
+  const { results } = await env.DB.prepare(`
+    SELECT code, invite_token_id
+    FROM register_codes
+    WHERE status = 'reserved'
+      AND invite_expires_at IS NOT NULL
+      AND datetime(invite_expires_at) <= datetime('now')
+  `).all();
+  if (!results?.length) return 0;
+  const now = new Date().toISOString();
+  const statements = results.flatMap((record: any) => [
+    env.DB.prepare(`
+      UPDATE register_codes
+      SET status = 'unused', invited_email = NULL, invite_expires_at = NULL, invite_token_id = NULL
+      WHERE code = ? AND status = 'reserved'
+    `).bind(record.code),
+    env.DB.prepare('UPDATE auth_tokens SET used_at = COALESCE(used_at, ?) WHERE id = ?')
+      .bind(now, record.invite_token_id || ''),
+  ]);
+  await env.DB.batch(statements);
+  return results.length;
+}
+
 async function findRegisterCode(c: Ctx, plainCode: string) {
+  await releaseExpiredRegisterInvites(c.env);
   const codeHash = await hashSecret(c, plainCode);
   return c.env.DB.prepare(`
     SELECT * FROM register_codes
@@ -255,12 +298,117 @@ async function findRegisterCode(c: Ctx, plainCode: string) {
   `).bind(codeHash, plainCode).first();
 }
 
-function registerCodeUnavailable(record: any) {
+export function registerCodeUnavailable(record: any) {
   if (!record) return true;
-  if (record.disabled_at || record.status === 'pause' || record.status === 'used') return true;
+  if (record.disabled_at || record.status !== 'unused') return true;
   if (record.expires_at && Date.parse(record.expires_at) <= Date.now()) return true;
-  if (record.max_uses !== null && record.max_uses !== undefined && Number(record.used_count || 0) >= Number(record.max_uses)) return true;
+  if (Number(record.used_count || 0) >= 1) return true;
   return false;
+}
+
+async function claimRegisterCode(c: Ctx, record: any, userId: string, username: string, inviteTokenId: string | null = null) {
+  const useId = crypto.randomUUID();
+  const [claimResult] = await c.env.DB.batch([
+    c.env.DB.prepare(`
+      UPDATE register_codes
+      SET used_count = 1,
+          max_uses = 1,
+          status = 'used',
+          used_by_uuid = ?,
+          used_by_username = ?,
+          used_at = CURRENT_TIMESTAMP
+      WHERE (id = ? OR code = ?)
+        AND disabled_at IS NULL
+        AND status = ?
+        AND (? IS NULL OR invite_token_id = ?)
+        AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+        AND COALESCE(used_count, 0) = 0
+    `).bind(userId, username, record.id, record.code, inviteTokenId ? 'reserved' : 'unused', inviteTokenId, inviteTokenId),
+    c.env.DB.prepare(`
+      INSERT INTO register_code_uses (id, code_id, user_id, used_at, ip_hash, country_code)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(useId, record.id || record.code, userId, nowIso(), await ipHash(c), countryCode(c)),
+  ]);
+  if (!claimResult?.meta?.changes) {
+    await c.env.DB.prepare('DELETE FROM register_code_uses WHERE id = ?').bind(useId).run();
+    throw new Error('Register code is no longer available.');
+  }
+  return useId;
+}
+
+async function releaseRegisterCodeClaim(c: Ctx, record: any, userId: string, useId: string, inviteTokenId: string | null = null) {
+  await c.env.DB.batch([
+    c.env.DB.prepare(`
+      UPDATE register_codes
+      SET used_count = 0,
+          status = ?,
+          used_by_uuid = NULL,
+          used_by_username = NULL,
+          used_at = NULL
+      WHERE (id = ? OR code = ?) AND used_by_uuid = ?
+    `).bind(inviteTokenId ? 'reserved' : 'unused', record.id, record.code, userId),
+    c.env.DB.prepare('DELETE FROM register_code_uses WHERE id = ? AND user_id = ?').bind(useId, userId),
+  ]);
+}
+
+async function deletePendingRegistration(env: any, userId: string) {
+  const user: any = await env.DB.prepare(`
+    SELECT uuid, avatar_key, avatar_original_key, avatar_pending_delete_key, avatar_original_pending_delete_key
+    FROM users
+    WHERE uuid = ? AND status = 'pending' AND COALESCE(email_verified, 0) = 0
+  `).bind(userId).first();
+  if (!user) return false;
+
+  const { results: codeUses } = await env.DB.prepare(
+    'SELECT DISTINCT code_id FROM register_code_uses WHERE user_id = ?'
+  ).bind(userId).all();
+  const statements = (codeUses || []).map((use: any) => env.DB.prepare(`
+    UPDATE register_codes
+    SET used_count = 0,
+        status = CASE WHEN status = 'used' THEN 'unused' ELSE status END,
+        used_by_uuid = CASE WHEN used_by_uuid = ? THEN NULL ELSE used_by_uuid END,
+        used_by_username = CASE WHEN used_by_uuid = ? THEN NULL ELSE used_by_username END,
+        used_at = CASE WHEN used_by_uuid = ? THEN NULL ELSE used_at END
+    WHERE id = ? OR code = ?
+  `).bind(userId, userId, userId, use.code_id, use.code_id));
+
+  statements.push(
+    env.DB.prepare('DELETE FROM register_code_uses WHERE user_id = ?').bind(userId),
+    env.DB.prepare('DELETE FROM auth_tokens WHERE user_id = ?').bind(userId),
+    env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(userId),
+    env.DB.prepare('DELETE FROM user_sessions WHERE uuid = ?').bind(userId),
+    env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(userId),
+    env.DB.prepare('DELETE FROM user_apps WHERE uuid = ?').bind(userId),
+    env.DB.prepare('DELETE FROM passkeys WHERE uuid = ?').bind(userId),
+    env.DB.prepare("DELETE FROM users WHERE uuid = ? AND status = 'pending' AND COALESCE(email_verified, 0) = 0").bind(userId),
+  );
+  await env.DB.batch(statements);
+
+  if (env.AVATAR_BUCKET) {
+    await Promise.all([
+      user.avatar_key,
+      user.avatar_original_key,
+      user.avatar_pending_delete_key,
+      user.avatar_original_pending_delete_key,
+    ].filter(Boolean).map((key: string) => env.AVATAR_BUCKET.delete(key).catch(() => null)));
+  }
+  return true;
+}
+
+export async function cleanupExpiredPendingRegistrations(env: any) {
+  if (!env?.DB) return 0;
+  const { results } = await env.DB.prepare(`
+    SELECT uuid
+    FROM users
+    WHERE status = 'pending'
+      AND COALESCE(email_verified, 0) = 0
+      AND datetime(created_at) <= datetime('now', '-24 hours')
+  `).all();
+  let deleted = 0;
+  for (const user of results || []) {
+    if (await deletePendingRegistration(env, String(user.uuid))) deleted += 1;
+  }
+  return deleted;
 }
 
 async function logAudit(c: Ctx, eventType: string, success: boolean, detail: Record<string, unknown> = {}, userId: string | null = null) {
@@ -339,7 +487,88 @@ function escapeHtml(value: string) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
 }
 
+function renderWelcomeEmail(payload: any) {
+  const username = escapeHtml(String(payload.username || 'there'));
+  const email = escapeHtml(String(payload.email || ''));
+  const actionUrl = escapeHtml(String(payload.action_url || ''));
+  const year = new Date().getFullYear();
+  const subject = 'Welcome to Auth Center';
+  const html = `<!doctype html>
+<html>
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${subject}</title></head>
+<body style="margin:0;padding:0;background:#f3f6fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#172033;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f6fa;padding:28px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;overflow:hidden;border:1px solid #dce5f0;border-radius:18px;background:#ffffff;box-shadow:0 14px 40px rgba(34,74,120,.08);">
+<tr><td style="padding:24px 28px;border-bottom:1px solid #e8eef5;">
+<div style="font-size:20px;font-weight:750;color:#172033;">Auth Center</div>
+<div style="margin-top:4px;font-size:13px;color:#748196;">Secure identity for every application</div>
+</td></tr>
+<tr><td style="padding:32px 28px;">
+<div style="width:64px;height:64px;margin:0 auto 20px;border-radius:50%;background:#eaf8f0;color:#18a058;font-size:34px;font-weight:800;line-height:64px;text-align:center;">&#10003;</div>
+<h1 style="margin:0;text-align:center;font-size:25px;line-height:1.35;color:#172033;">Your email is verified</h1>
+<p style="margin:14px 0 22px;text-align:center;font-size:15px;line-height:1.7;color:#536176;">Welcome, ${username}. Your Auth Center account is active and ready to use.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;border:1px solid #e6edf5;border-radius:12px;background:#f8fafc;">
+<tr><td style="padding:13px 16px;font-size:13px;color:#748196;">Account</td><td align="right" style="padding:13px 16px;font-size:14px;font-weight:650;color:#172033;">${username}</td></tr>
+<tr><td style="padding:13px 16px;border-top:1px solid #e6edf5;font-size:13px;color:#748196;">Verified email</td><td align="right" style="padding:13px 16px;border-top:1px solid #e6edf5;font-size:14px;font-weight:650;color:#172033;word-break:break-all;">${email}</td></tr>
+</table>
+<div style="text-align:center;"><a href="${actionUrl}" style="display:inline-block;border-radius:10px;background:#1677ff;padding:12px 22px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;">Sign in to Auth Center</a></div>
+<p style="margin:22px 0 0;text-align:center;font-size:12px;line-height:1.65;color:#8a96a8;">Keep your account secure and never share sign-in codes or recovery links.</p>
+</td></tr>
+<tr><td style="padding:18px 28px;border-top:1px solid #e8eef5;background:#f8fafc;font-size:12px;line-height:1.6;color:#8a96a8;">&copy; ${year} Auth Center. This is an automated account email.</td></tr>
+</table>
+</td></tr></table>
+</body></html>`;
+  return {
+    subject,
+    html,
+    text: `Welcome, ${String(payload.username || 'there')}.\n\nYour email ${String(payload.email || '')} is verified and your Auth Center account is active.\n\nSign in: ${String(payload.action_url || '')}\n\nNever share sign-in codes or recovery links.`,
+  };
+}
+
+function renderRegisterInviteEmail(payload: any) {
+  const email = escapeHtml(String(payload.email || ''));
+  const registerCode = escapeHtml(String(payload.register_code || ''));
+  const actionUrl = escapeHtml(String(payload.action_url || ''));
+  const expiresAt = escapeHtml(String(payload.expires_at_display || ''));
+  const year = new Date().getFullYear();
+  const subject = "You're invited to Auth Center";
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>${subject}</title></head>
+<body style="margin:0;padding:0;background:#eef4fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#152033;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef4fb;padding:28px 12px;"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;overflow:hidden;border:1px solid #d8e4f2;border-radius:20px;background:#ffffff;box-shadow:0 18px 50px rgba(31,78,133,.12);">
+<tr><td style="padding:30px 32px;background:#1268e8;color:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td><div style="font-size:13px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;opacity:.78;">Auth Center Invitation</div><div style="margin-top:12px;font-size:30px;font-weight:800;line-height:1.18;">A place has been reserved for you.</div></td>
+<td width="72" align="right"><div style="width:58px;height:58px;border:1px solid rgba(255,255,255,.45);border-radius:18px;background:rgba(255,255,255,.14);font-size:26px;font-weight:800;line-height:58px;text-align:center;">A</div></td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:32px;">
+<p style="margin:0 0 22px;font-size:16px;line-height:1.75;color:#44546a;">You have been invited to create an Auth Center account. Your email and registration code are already secured for this invitation.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="overflow:hidden;border:1px solid #dce7f4;border-radius:14px;background:#f7faff;">
+<tr><td style="padding:14px 16px;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#7a899e;">Invited email</td><td align="right" style="padding:14px 16px;font-size:14px;font-weight:700;color:#152033;word-break:break-all;">${email}</td></tr>
+<tr><td style="padding:14px 16px;border-top:1px solid #e2ebf5;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#7a899e;">Register code</td><td align="right" style="padding:14px 16px;border-top:1px solid #e2ebf5;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#1268e8;word-break:break-all;">${registerCode}</td></tr>
+</table>
+<div style="margin:24px 0;padding:14px 16px;border-left:4px solid #1268e8;border-radius:8px;background:#edf5ff;font-size:14px;line-height:1.65;color:#33455c;"><strong>Valid for 7 days.</strong><br />Expires at ${expiresAt}. If registration is not completed by then, the code is automatically released.</div>
+<div style="text-align:center;"><a href="${actionUrl}" style="display:inline-block;border-radius:11px;background:#1268e8;padding:13px 24px;color:#ffffff;font-size:15px;font-weight:750;text-decoration:none;box-shadow:0 8px 20px rgba(18,104,232,.22);">Accept invitation</a></div>
+<p style="margin:24px 0 8px;font-size:12px;line-height:1.65;color:#7a899e;">If the button does not open, use this private link:</p>
+<p style="margin:0;word-break:break-all;font-size:12px;line-height:1.6;color:#53647b;">${actionUrl}</p>
+</td></tr>
+<tr><td style="padding:18px 32px;border-top:1px solid #e3ebf4;background:#f8fafc;font-size:12px;line-height:1.65;color:#8290a3;">This invitation is tied to ${email}. Do not forward it. &copy; ${year} Auth Center.</td></tr>
+</table></td></tr></table>
+</body></html>`;
+  return {
+    subject,
+    html,
+    text: `You're invited to Auth Center.\n\nThis invitation is reserved for ${String(payload.email || '')}.\nRegister code: ${String(payload.register_code || '')}\n\nValid for 7 days and expires at ${String(payload.expires_at_display || '')}. The code is released if registration is not completed by then.\n\nAccept invitation: ${String(payload.action_url || '')}\n\nDo not forward this private link.`,
+  };
+}
+
 function renderEmail(templateName: string, payload: any) {
+  if (templateName === 'register_invite') return renderRegisterInviteEmail(payload);
+  if (templateName === 'welcome') return renderWelcomeEmail(payload);
+
   const appUrl = String(payload.action_url || '');
   const expire = String(payload.expire_minutes || VERIFY_TOKEN_MINUTES);
   const username = String(payload.username || payload.username_or_email || 'there');
@@ -461,7 +690,7 @@ async function createToken(c: Ctx, type: string, userId: string | null, email: s
   return id;
 }
 
-async function consumeToken(c: Ctx, type: string, value: string, email?: string | null) {
+async function findActiveToken(c: Ctx, type: string, value: string, email?: string | null) {
   const tokenHash = await hashSecret(c, value);
   const token: any = await c.env.DB.prepare(`
     SELECT * FROM auth_tokens
@@ -472,6 +701,12 @@ async function consumeToken(c: Ctx, type: string, value: string, email?: string 
   if (!token) return null;
   if (email && token.email && token.email.toLowerCase() !== email.toLowerCase()) return null;
   if (Date.parse(token.expires_at) <= Date.now()) return null;
+  return token;
+}
+
+async function consumeToken(c: Ctx, type: string, value: string, email?: string | null) {
+  const token = await findActiveToken(c, type, value, email);
+  if (!token) return null;
   await c.env.DB.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ?').bind(nowIso(), token.id).run();
   return token;
 }
@@ -581,7 +816,7 @@ async function requireAdmin(c: Ctx) {
       const separator = decoded.indexOf(':');
       const username = decoded.slice(0, separator);
       const password = decoded.slice(separator + 1);
-      if (username === c.env.ADMIN_USERNAME && password === c.env.ADMIN_PASSWORD) {
+      if (username === c.env.ADMIN_USERNAME && password === adminPassword(c)) {
         return {
           payload: { role: 'admin', username, sub: 'admin' },
           user: { uuid: 'admin', id: 'admin', username, role: 'admin', status: 'active' },
@@ -602,26 +837,67 @@ function redirectOrJson(c: Ctx, redirectUri: string | undefined, token: string, 
   return c.json({ ok: true, token, ...(fallbackPath ? { redirect_to: fallbackPath } : {}) });
 }
 
+function formatInviteExpiry(iso: string) {
+  const local = new Date(Date.parse(iso) + 8 * 60 * 60 * 1000);
+  const date = [local.getUTCFullYear(), String(local.getUTCMonth() + 1).padStart(2, '0'), String(local.getUTCDate()).padStart(2, '0')].join('-');
+  return `${date} 00:00 (UTC+8)`;
+}
+
+async function resolveRegisterInvite(c: Ctx, value: string) {
+  if (!value) return null;
+  await releaseExpiredRegisterInvites(c.env);
+  const token: any = await findActiveToken(c, 'register_invite', value);
+  if (!token?.email) return null;
+  const metadata: any = safeJson(token.metadata);
+  const code = String(metadata.register_code || '');
+  if (!code) return null;
+  const record: any = await findRegisterCode(c, code);
+  if (!record
+    || record.status !== 'reserved'
+    || record.invite_token_id !== token.id
+    || normalizeEmail(record.invited_email) !== normalizeEmail(token.email)
+    || !record.invite_expires_at
+    || Date.parse(record.invite_expires_at) <= Date.now()) return null;
+  return { token, record, email: normalizeEmail(token.email), code };
+}
+
 export function registerEmailAuthFeature(app: Hono<any>) {
   app.get('/api/auth/registration/rules', async (c) => c.json({ ok: true, rules: await publicRegistrationRulesAsync(c) }));
 
+  app.get('/api/auth/register/invite', async (c) => {
+    const invitation = await resolveRegisterInvite(c, String(c.req.query('token') || ''));
+    if (!invitation) return c.json({ ok: false, message: 'This invitation is invalid or has expired.' }, 410);
+    const existing = await findUserByEmail(c, invitation.email || '');
+    if (existing) return c.json({ ok: false, message: 'This email is already registered.' }, 409);
+    return c.json({
+      ok: true,
+      email: invitation.email,
+      register_code: invitation.code,
+      expires_at: invitation.record.invite_expires_at,
+      expires_at_display: formatInviteExpiry(invitation.record.invite_expires_at),
+    });
+  });
+
   app.post('/api/auth/register', async (c) => {
     const body: any = await c.req.json().catch(() => ({}));
-    const email = normalizeEmail(body.email);
+    const inviteValue = String(body.invite_token || '').trim();
+    const invitation = inviteValue ? await resolveRegisterInvite(c, inviteValue) : null;
+    if (inviteValue && !invitation) return c.json({ ok: false, message: 'This invitation is invalid or has expired.' }, 410);
+    const email = invitation?.email || normalizeEmail(body.email);
     const username = String(body.username || '').trim();
     const fullName = String(body.fullname || body.name || '').trim();
     const password = String(body.password || '');
     const confirm = String(body.confirm_password || password);
-    const registerCode = String(body.register_code || '').trim();
+    const registerCode = invitation?.code || String(body.register_code || '').trim();
     const generic = 'If the information is valid, a verification email will be sent.';
-    await logAudit(c, 'register_email_attempt', true, { email_domain: email ? emailDomain(email) : null, has_register_code: !!registerCode });
+    await logAudit(c, 'register_email_attempt', true, { email_domain: email ? emailDomain(email) : null, has_register_code: !!registerCode, invited: !!invitation });
 
-    if (!(await externalRegistrationEnabled(c))) {
+    if (!invitation && !(await externalRegistrationEnabled(c))) {
       return c.json({ ok: false, message: 'External registration is closed.' }, 403);
     }
 
     const rules = publicRegistrationRules(c);
-    if (!rules.email_registration_allowed) return c.json({ ok: false, message: 'Public registration is closed.' }, 403);
+    if (!invitation && !rules.email_registration_allowed) return c.json({ ok: false, message: 'Public registration is closed.' }, 403);
     if (!email || !username || !fullName || !password || password !== confirm) return c.json({ ok: false, message: 'Please complete the required fields.' }, 400);
     if (containsAdmin(username) || containsAdmin(fullName)) return c.json({ ok: false, message: 'Username and full name cannot contain admin.' }, 400);
     const domainError = assertEmailDomain(c, email);
@@ -639,34 +915,43 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const okUsernameAttempts = await incrementCounter(c, 'username_register_attempts_hour', username.toLowerCase(), 3600000, envInt(c, 'MAX_REGISTER_ATTEMPTS_PER_USERNAME_PER_HOUR', 5));
     if (!okGlobal || !okIpHour || !okIpDay || !okEmailAttempts || !okUsernameAttempts) return c.json({ ok: false, message: 'Too many requests. Please try later.' }, 429);
 
-    const existing: any = await c.env.DB.prepare('SELECT uuid FROM users WHERE username = ? OR lower(email) = ?').bind(username, email).first();
-    if (existing) return c.json({ ok: true, message: generic });
+    const existing: any = await c.env.DB.prepare(
+      'SELECT uuid, username, email FROM users WHERE lower(username) = lower(?) OR lower(email) = ? LIMIT 1'
+    ).bind(username, email).first();
+    if (existing?.email && normalizeEmail(existing.email) === email) {
+      return c.json({ ok: false, message: 'Email is already in use.' }, 409);
+    }
+    if (existing) return c.json({ ok: false, message: 'Username is already in use.' }, 409);
 
     let config = await defaultRegistrationConfig(c);
     let role = 'user';
     let codeRecord: any = null;
     if (registerCode) {
-      codeRecord = await findRegisterCode(c, registerCode);
-      if (registerCodeUnavailable(codeRecord)) return c.json({ ok: false, message: 'Register code is invalid.' }, 400);
+      codeRecord = invitation?.record || await findRegisterCode(c, registerCode);
+      if (!invitation && registerCodeUnavailable(codeRecord)) return c.json({ ok: false, message: 'Register code is invalid.' }, 400);
       config = normalizePermissionConfig(safeJson(codeRecord.config_json));
       role = ['admin', 'moderator', 'user'].includes(codeRecord.role) ? codeRecord.role : 'user';
     }
 
     const uuid = crypto.randomUUID();
+    let codeUseId = '';
     try {
       const passwordHash = await createPasswordHash(c, password);
       await c.env.DB.prepare(`
-        INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, cookie_expiry_days, birthday, avatar_data, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, '', ?, ?, ?, ?, ?)
+        INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, password_plain, cookie_expiry_days, birthday, avatar_data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
       `).bind(
         uuid,
         uuid,
         username,
         fullName,
         email,
+        invitation ? 1 : 0,
         role,
+        invitation ? 'active' : 'pending',
         registerCode ? 'code' : 'email',
         passwordHash,
+        password,
         config.cookie_expiry_days || 7,
         body.birthday || null,
         typeof body.avatar_data === 'string' && body.avatar_data.startsWith('data:image/') ? body.avatar_data : null,
@@ -680,9 +965,35 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       await applyPermissionConfig(c, uuid, config, false);
 
       if (codeRecord) {
-        await c.env.DB.prepare('UPDATE register_codes SET used_count = COALESCE(used_count, 0) + 1, status = CASE WHEN max_uses = 1 THEN "used" ELSE status END, used_by_uuid = COALESCE(used_by_uuid, ?), used_by_username = COALESCE(used_by_username, ?), used_at = COALESCE(used_at, CURRENT_TIMESTAMP) WHERE id = ? OR code = ?').bind(uuid, username, codeRecord.id, codeRecord.code).run();
-        await c.env.DB.prepare('INSERT INTO register_code_uses (id, code_id, user_id, used_at, ip_hash) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), codeRecord.id || codeRecord.code, uuid, nowIso(), await ipHash(c)).run();
+        codeUseId = await claimRegisterCode(c, codeRecord, uuid, username, invitation?.token.id || null);
         await logAudit(c, 'register_code_success', true, { code_id: codeRecord.id || codeRecord.code, role }, uuid);
+      }
+
+      if (invitation) {
+        const session = await createSessionAndJwt(c, {
+          uuid,
+          id: uuid,
+          username,
+          name: fullName,
+          email,
+          email_verified: 1,
+          role,
+          status: 'active',
+          auth_provider: 'code',
+        }, 'auth-center');
+        await enqueueEmail(c, email, 'welcome', {
+          username,
+          email,
+          action_url: `${getPublicBaseUrl(c)}/login`,
+        });
+        await c.env.DB.batch([
+          c.env.DB.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(nowIso(), invitation.token.id),
+          c.env.DB.prepare('UPDATE register_codes SET invite_token_id = NULL WHERE (id = ? OR code = ?) AND used_by_uuid = ?')
+            .bind(codeRecord.id, codeRecord.code, uuid),
+        ]);
+        await logAudit(c, 'email_verify_success', true, { method: 'register_invite' }, uuid);
+        await logAudit(c, 'register_email_success', true, { email_domain: emailDomain(email), has_register_code: true, invited: true }, uuid);
+        return redirectOrJson(c, body.redirect_uri, session.token, role === 'admin' ? '/dash' : `/user/${uuid}`);
       }
 
       const token = crypto.randomUUID() + crypto.randomUUID();
@@ -696,9 +1007,26 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       await logAudit(c, 'email_verify_sent', true, { email }, uuid);
       return c.json({ ok: true, message: generic });
     } catch (error: any) {
-      await c.env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(uuid).run().catch(() => null);
-      await c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid).run().catch(() => null);
-      await logAudit(c, 'register_email_failed', false, { reason: String(error?.message || error).slice(0, 240), email_domain: emailDomain(email) });
+      if (invitation) {
+        if (codeUseId) await releaseRegisterCodeClaim(c, codeRecord, uuid, codeUseId, invitation.token.id).catch(() => null);
+        await c.env.DB.batch([
+          c.env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(uuid),
+          c.env.DB.prepare('DELETE FROM user_sessions WHERE uuid = ?').bind(uuid),
+          c.env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(uuid),
+          c.env.DB.prepare('DELETE FROM user_apps WHERE uuid = ?').bind(uuid),
+          c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid),
+        ]).catch(() => null);
+      } else {
+        await deletePendingRegistration(c.env, uuid).catch(() => null);
+      }
+      const reason = String(error?.message || error);
+      await logAudit(c, 'register_email_failed', false, { reason: reason.slice(0, 240), email_domain: emailDomain(email) });
+      if (/UNIQUE constraint failed:\s*users\.email/i.test(reason)) {
+        return c.json({ ok: false, message: 'Email is already in use.' }, 409);
+      }
+      if (/UNIQUE constraint failed:\s*users\.username/i.test(reason)) {
+        return c.json({ ok: false, message: 'Username is already in use.' }, 409);
+      }
       return c.json({ ok: false, message: 'Registration failed. Please try again later.' }, 500);
     }
   });
@@ -733,9 +1061,9 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const uuid = crypto.randomUUID();
     const passwordHash = await createPasswordHash(c, password);
     await c.env.DB.prepare(`
-      INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, cookie_expiry_days, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, 'user', 'pending', 'email', ?, '', 7, ?, ?)
-    `).bind(uuid, uuid, username, username, email, passwordHash, nowIso(), nowIso()).run();
+      INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, password_plain, cookie_expiry_days, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 0, 'user', 'pending', 'email', ?, '', ?, 7, ?, ?)
+    `).bind(uuid, uuid, username, username, email, passwordHash, password, nowIso(), nowIso()).run();
     await c.env.DB.prepare(`
       INSERT INTO user_credentials (user_id, password_hash, password_algo, password_updated_at)
       VALUES (?, ?, 'pbkdf2-sha256', ?)
@@ -768,28 +1096,28 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     if (!turnstile.ok) return c.json({ ok: false, message: '真人验证失败，请刷新后重试。' }, 400);
     const existing: any = await c.env.DB.prepare('SELECT uuid FROM users WHERE username = ?').bind(username).first();
     if (existing) return c.json({ ok: false, message: '该用户名不可用。' }, 409);
-    const codeHash = await hashSecret(c, registerCode);
-    const record: any = await c.env.DB.prepare(`
-      SELECT * FROM register_codes
-      WHERE code_hash = ?
-      LIMIT 1
-    `).bind(codeHash).first();
-    if (!record || record.disabled_at || record.status === 'pause') return c.json({ ok: false, message: '注册码不可用。' }, 403);
-    if (record.expires_at && Date.parse(record.expires_at) <= Date.now()) return c.json({ ok: false, message: '注册码不可用。' }, 403);
-    if (record.max_uses !== null && record.max_uses !== undefined && Number(record.used_count || 0) >= Number(record.max_uses)) return c.json({ ok: false, message: '注册码不可用。' }, 403);
+    const record: any = await findRegisterCode(c, registerCode);
+    if (registerCodeUnavailable(record)) return c.json({ ok: false, message: 'Register code is unavailable.' }, 403);
     const uuid = crypto.randomUUID();
     const passwordHash = await createPasswordHash(c, password);
     const role = ['admin', 'moderator', 'user'].includes(record.role) ? record.role : 'user';
     await c.env.DB.prepare(`
-      INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, cookie_expiry_days, created_at, updated_at)
-      VALUES (?, ?, ?, ?, NULL, 0, ?, 'active', 'code', ?, '', 7, ?, ?)
-    `).bind(uuid, uuid, username, username, role, passwordHash, nowIso(), nowIso()).run();
+      INSERT INTO users (id, uuid, username, name, email, email_verified, role, status, auth_provider, password_hash, password_salt, password_plain, cookie_expiry_days, created_at, updated_at)
+      VALUES (?, ?, ?, ?, NULL, 0, ?, 'active', 'code', ?, '', ?, 7, ?, ?)
+    `).bind(uuid, uuid, username, username, role, passwordHash, password, nowIso(), nowIso()).run();
     await c.env.DB.prepare(`
       INSERT INTO user_credentials (user_id, password_hash, password_algo, password_updated_at)
       VALUES (?, ?, 'pbkdf2-sha256', ?)
     `).bind(uuid, passwordHash, nowIso()).run();
-    await c.env.DB.prepare('UPDATE register_codes SET used_count = COALESCE(used_count, 0) + 1, status = CASE WHEN max_uses = 1 THEN "used" ELSE status END, used_by_uuid = COALESCE(used_by_uuid, ?), used_by_username = COALESCE(used_by_username, ?), used_at = COALESCE(used_at, CURRENT_TIMESTAMP) WHERE id = ? OR code = ?').bind(uuid, username, record.id, record.code).run();
-    await c.env.DB.prepare('INSERT INTO register_code_uses (id, code_id, user_id, used_at, ip_hash) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), record.id || record.code, uuid, nowIso(), await ipHash(c)).run();
+    try {
+      await claimRegisterCode(c, record, uuid, username);
+    } catch {
+      await c.env.DB.batch([
+        c.env.DB.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(uuid),
+        c.env.DB.prepare('DELETE FROM users WHERE uuid = ?').bind(uuid),
+      ]);
+      return c.json({ ok: false, message: 'Register code is unavailable.' }, 409);
+    }
     await logAudit(c, 'register_code_success', true, { code_id: record.id || record.code, role }, uuid);
     const { token } = await createSessionAndJwt(c, { uuid, username, name: username, role, status: 'active', auth_provider: 'code', email: null, email_verified: 0 }, 'auth-center');
     return c.json({ ok: true, message: '注册成功', token });
@@ -802,7 +1130,18 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       await logAudit(c, 'email_verify_failed', false, {});
       return c.redirect('/verify-email?status=failed');
     }
-    await c.env.DB.prepare("UPDATE users SET email_verified = 1, status = 'active', updated_at = ? WHERE uuid = ? OR id = ?").bind(nowIso(), record.user_id, record.user_id).run();
+    const verified: any = await c.env.DB.prepare(`
+      UPDATE users SET email_verified = 1, status = 'active', updated_at = ?
+      WHERE (uuid = ? OR id = ?) AND COALESCE(email_verified, 0) = 0
+    `).bind(nowIso(), record.user_id, record.user_id).run();
+    const user: any = await findUserByUuid(c, record.user_id);
+    if (verified?.meta?.changes && user?.email) {
+      await enqueueEmail(c, user.email, 'welcome', {
+        username: user.username,
+        email: user.email,
+        action_url: `${getPublicBaseUrl(c)}/login`,
+      });
+    }
     await logAudit(c, 'email_verify_success', true, {}, record.user_id);
     return c.redirect('/verify-email?status=success');
   });
@@ -842,7 +1181,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const isAdminIdentifier =
       identifier.toLowerCase() === String(c.env.ADMIN_USERNAME || 'admin').toLowerCase()
       || (!!adminEmail && email === adminEmail);
-    if (isAdminIdentifier && password === c.env.ADMIN_PASSWORD) {
+    if (isAdminIdentifier && password === adminPassword(c)) {
       const token = await generateJWT({
         sub: 'admin',
         uuid: 'admin',
@@ -898,6 +1237,8 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const turnstile = await verifyTurnstile(c, body.turnstile_token);
     if (!turnstile.ok) return c.json({ ok: false, message: '真人验证失败，请刷新后重试。' }, 400);
     if (email) {
+      const allowed = await incrementCounter(c, 'login_otp_email_minute', email, 60000, 1);
+      if (!allowed) return c.json({ ok: true, message });
       const user: any = await findUserByEmail(c, email);
       if (user && user.email_verified && user.status === 'active') {
         const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -1117,12 +1458,17 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       return c.json({ ok: false, message: 'Register code is invalid or unavailable.' }, 400);
     }
     const config = normalizePermissionConfig(safeJson(record.config_json) || { role: record.role || 'user' });
-    await applyPermissionConfig(c, active.user.uuid || active.user.id, config, true);
-    await c.env.DB.prepare('UPDATE register_codes SET used_count = COALESCE(used_count, 0) + 1, status = CASE WHEN max_uses = 1 THEN "used" ELSE status END WHERE id = ? OR code = ?')
-      .bind(record.id, record.code || record.id).run();
-    await c.env.DB.prepare('INSERT INTO register_code_uses (id, code_id, user_id, used_at, ip_hash) VALUES (?, ?, ?, ?, ?)')
-      .bind(crypto.randomUUID(), record.id || record.code, active.user.uuid || active.user.id, nowIso(), await ipHash(c)).run();
-    await logAudit(c, 'register_code_update_success', true, { code_id: record.id || record.code }, active.user.uuid || active.user.id);
+    const userId = active.user.uuid || active.user.id;
+    let useId = '';
+    try {
+      useId = await claimRegisterCode(c, record, userId, active.user.username);
+      await applyPermissionConfig(c, userId, config, true);
+    } catch {
+      if (useId) await releaseRegisterCodeClaim(c, record, userId, useId).catch(() => null);
+      await logAudit(c, 'register_code_update_failed', false, { code_id: record.id || record.code }, userId);
+      return c.json({ ok: false, message: 'Register code is invalid or unavailable.' }, 409);
+    }
+    await logAudit(c, 'register_code_update_success', true, { code_id: record.id || record.code }, userId);
     return c.json({ ok: true, message: 'Register code configuration applied.' });
   });
 
@@ -1136,6 +1482,97 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       LIMIT 200
     `).all();
     return c.json({ ok: true, users: results || [] });
+  });
+
+  app.get('/admin/auth/users/:uuid/detail', async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) return c.json({ error: 'Forbidden' }, 403);
+    const uuid = c.req.param('uuid');
+    const user: any = await findUserByUuid(c, uuid);
+    if (!user) return c.json({ error: 'User not found' }, 404);
+    const userId = user.uuid || user.id;
+    const [{ results: sessions }, { results: registerCodes }] = await Promise.all([
+      c.env.DB.prepare(`
+        SELECT
+          us.session_id AS id,
+          COALESCE(us.user_agent, s.user_agent) AS user_agent,
+          s.ip_hash,
+          COALESCE(us.login_at, s.created_at) AS created_at,
+          COALESCE(us.expires_at, s.expires_at) AS expires_at,
+          COALESCE(us.revoked_at, s.revoked_at) AS revoked_at,
+          COALESCE(us.ip_address, s.ip_hash) AS ip_address,
+          COALESCE(us.browser, '') AS browser,
+          COALESCE(us.device_type, '') AS device_type,
+          COALESCE(us.app_id, 'auth-center') AS app_id
+        FROM user_sessions us
+        LEFT JOIN auth_sessions s ON s.id = us.session_id AND s.user_id = us.uuid
+        WHERE us.uuid = ?
+        ORDER BY COALESCE(us.login_at, s.created_at) DESC
+        LIMIT 100
+      `).bind(userId).all(),
+      c.env.DB.prepare(`
+        SELECT
+          rc.code,
+          rc.template_name,
+          rc.config_json,
+          rc.status,
+          COALESCE(rc.used_by_uuid, code_user.uuid, code_user.id) AS used_by_uuid,
+          COALESCE(rc.used_by_username, code_user.username) AS used_by_username,
+          rc.created_at,
+          uses.used_at,
+          uses.country_code
+        FROM register_code_uses uses
+        INNER JOIN register_codes rc ON rc.id = uses.code_id OR rc.code = uses.code_id
+        LEFT JOIN users code_user ON code_user.uuid = uses.user_id OR code_user.id = uses.user_id
+        WHERE uses.user_id = ?
+        ORDER BY uses.used_at DESC
+        LIMIT 100
+      `).bind(userId).all(),
+    ]);
+    return c.json({ ok: true, user, sessions: sessions || [], register_codes: registerCodes || [] });
+  });
+
+  app.post('/admin/auth/users/:uuid/verify-email', async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) return c.json({ error: 'Forbidden' }, 403);
+    const uuid = c.req.param('uuid');
+    const user: any = await findUserByUuid(c, uuid);
+    if (!user) return c.json({ error: 'User not found' }, 404);
+    if (!user.email) return c.json({ error: 'This user has no email to verify' }, 400);
+    if (Number(user.email_verified || 0) === 1) return c.json({ ok: true, already_verified: true });
+    const verifiedAt = nowIso();
+    const result: any = await c.env.DB.prepare(`
+      UPDATE users
+      SET email_verified = 1, status = 'active', updated_at = ?
+      WHERE (uuid = ? OR id = ?) AND COALESCE(email_verified, 0) = 0
+    `).bind(verifiedAt, uuid, uuid).run();
+    if (result?.meta?.changes) {
+      await c.env.DB.prepare(`
+        UPDATE auth_tokens SET used_at = ?
+        WHERE user_id = ? AND type = 'email_verify' AND used_at IS NULL
+      `).bind(verifiedAt, user.uuid || user.id).run();
+      await enqueueEmail(c, user.email, 'welcome', {
+        username: user.username,
+        email: user.email,
+        action_url: `${getPublicBaseUrl(c)}/login`,
+      });
+      await logAudit(c, 'admin_verify_email', true, { target_user: user.uuid || user.id }, admin.user.uuid || admin.user.id);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.post('/admin/auth/users/:uuid/sessions/:sessionId/revoke', async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) return c.json({ error: 'Forbidden' }, 403);
+    const uuid = c.req.param('uuid');
+    const sessionId = c.req.param('sessionId');
+    const revokedAt = nowIso();
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL').bind(revokedAt, sessionId, uuid),
+      c.env.DB.prepare('UPDATE user_sessions SET revoked_at = ? WHERE session_id = ? AND uuid = ? AND revoked_at IS NULL').bind(revokedAt, sessionId, uuid),
+    ]);
+    await logAudit(c, 'session_revoked', true, { target_user: uuid, session_id: sessionId }, admin.user.uuid || admin.user.id);
+    return c.json({ ok: true });
   });
 
   app.post('/admin/auth/users/:uuid/status', async (c) => {
@@ -1189,13 +1626,68 @@ export function registerEmailAuthFeature(app: Hono<any>) {
   app.get('/admin/auth/register-codes', async (c) => {
     const admin = await requireAdmin(c);
     if (!admin) return c.json({ error: 'Forbidden' }, 403);
+    await releaseExpiredRegisterInvites(c.env);
     const { results } = await c.env.DB.prepare(`
-      SELECT id, code, label, role, max_uses, used_count, expires_at, disabled_at, created_by, created_at, status, template_name
+      SELECT id, code, label, role, max_uses, used_count, expires_at, disabled_at, created_by, created_at, status, template_name, invited_email, invite_expires_at
       FROM register_codes
       ORDER BY created_at DESC
       LIMIT 200
     `).all();
     return c.json({ ok: true, codes: results || [] });
+  });
+
+  app.post('/admin/auth/register-codes/:id/invite', async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) return c.json({ error: 'Forbidden' }, 403);
+    const body: any = await c.req.json().catch(() => ({}));
+    const email = normalizeEmail(body.email);
+    if (!email) return c.json({ ok: false, message: 'Enter a valid email address.' }, 400);
+    const domainError = assertEmailDomain(c, email);
+    if (domainError) return c.json({ ok: false, message: domainError }, 400);
+    if (await findUserByEmail(c, email)) return c.json({ ok: false, message: 'This email is already registered.' }, 409);
+
+    const record: any = await findRegisterCode(c, c.req.param('id'));
+    if (registerCodeUnavailable(record)) return c.json({ ok: false, message: 'This register code is unavailable.' }, 409);
+
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    const expiresAt = registerInviteExpiry();
+    if (record.expires_at && Date.parse(record.expires_at) < Date.parse(expiresAt)) {
+      return c.json({ ok: false, message: 'This register code does not remain valid for the full 7-day invitation period.' }, 409);
+    }
+    const tokenId = await createToken(c, 'register_invite', null, email, token, expiresAt, { register_code: record.code });
+    const reserved: any = await c.env.DB.prepare(`
+      UPDATE register_codes
+      SET status = 'reserved', invited_email = ?, invite_expires_at = ?, invite_token_id = ?
+      WHERE (id = ? OR code = ?)
+        AND status = 'unused'
+        AND disabled_at IS NULL
+        AND COALESCE(used_count, 0) = 0
+        AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+    `).bind(email, expiresAt, tokenId, record.id, record.code).run();
+    if (!reserved?.meta?.changes) {
+      await c.env.DB.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ?').bind(nowIso(), tokenId).run();
+      return c.json({ ok: false, message: 'This register code is no longer available.' }, 409);
+    }
+
+    try {
+      await enqueueEmail(c, email, 'register_invite', {
+        email,
+        register_code: record.code,
+        action_url: `${getPublicBaseUrl(c)}/register?invite=${encodeURIComponent(token)}`,
+        expires_at: expiresAt,
+        expires_at_display: formatInviteExpiry(expiresAt),
+      });
+    } catch (error) {
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE register_codes SET status = 'unused', invited_email = NULL, invite_expires_at = NULL, invite_token_id = NULL WHERE (id = ? OR code = ?) AND invite_token_id = ?")
+          .bind(record.id, record.code, tokenId),
+        c.env.DB.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ?').bind(nowIso(), tokenId),
+      ]);
+      throw error;
+    }
+
+    await logAudit(c, 'admin_send_register_invite', true, { code_id: record.id || record.code, email_domain: emailDomain(email), expires_at: expiresAt }, admin.user.uuid || admin.user.id);
+    return c.json({ ok: true, message: 'Invitation sent.', expires_at: expiresAt, expires_at_display: formatInviteExpiry(expiresAt) });
   });
 
   app.post('/admin/auth/register-codes', async (c) => {
@@ -1208,9 +1700,9 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     await c.env.DB.prepare(`
       INSERT INTO register_codes (id, code, code_hash, label, role, max_uses, used_count, expires_at, created_by, created_at, status, config_json)
       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'unused', ?)
-    `).bind(id, id, await hashSecret(c, plain), String(body.label || '').trim() || null, role, body.max_uses ? Number(body.max_uses) : null, body.expires_at || null, admin.user.uuid || admin.user.id, nowIso(), JSON.stringify({ role })).run();
+    `).bind(id, id, await hashSecret(c, plain), String(body.label || '').trim() || null, role, 1, body.expires_at || null, admin.user.uuid || admin.user.id, nowIso(), JSON.stringify({ role })).run();
     await logAudit(c, 'admin_create_register_code', true, { code_id: id, role }, admin.user.uuid || admin.user.id);
-    return c.json({ ok: true, code: plain, record: { id, label: body.label || null, role, max_uses: body.max_uses || null, expires_at: body.expires_at || null } });
+    return c.json({ ok: true, code: plain, record: { id, label: body.label || null, role, max_uses: 1, expires_at: body.expires_at || null } });
   });
 
   app.post('/admin/auth/register-codes/:id/disable', async (c) => {

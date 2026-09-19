@@ -19,6 +19,7 @@ import RegisterCodeManager from './RegisterCodeManager';
 import PermissionMatrix from './PermissionMatrix';
 import DatePicker from './DatePicker';
 import { TestAccess, TestIdentityDevPage, TestIdentityDocsPage } from './TestAccess';
+import { TestIdentityPreview } from './TestIdentityPreview';
 import {
   AccountSecurityPage,
   AdminSecurityPage,
@@ -474,11 +475,18 @@ function Dashboard() {
       body.avatar_data = await readFileAsDataUrl(avatarFile);
     }
 
-    const res = await authFetch('/admin/users', {
-      method: 'POST',
-      body: JSON.stringify(body)
-    });
-    if (res.ok) { fetchUsers(); form.reset(); }
+    try {
+      const res = await authFetch('/admin/users', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Unable to create user');
+      await fetchUsers();
+      form.reset();
+    } catch (error: any) {
+      alert(error.message || 'Unable to create user');
+    }
   };
 
   const overwriteUserPassword = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -1313,6 +1321,7 @@ export default function App() {
       <Route path="/dash" element={<Dashboard />} />
       <Route path="/dev/docs" element={<TestIdentityDocsPage />} />
       <Route path="/dev/:name" element={<TestIdentityDevPage />} />
+      <Route path="/preview" element={<TestIdentityPreview />} />
       <Route path="/admin/passkey" element={<AdminPasskeyManage />} />
       <Route path="/admin/security" element={<AdminSecurityPage />} />
       <Route path="/login" element={<EmailLoginPage />} />

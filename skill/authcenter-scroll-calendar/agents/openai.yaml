@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auth Center Scroll & Calendar"
+  short_description: "Implement compact custom scrollbars and polished date picker controls."
+  default_prompt: "Use this skill to build Auth Center style scroll areas or a compact custom date picker that works on desktop and mobile without native browser date UI."

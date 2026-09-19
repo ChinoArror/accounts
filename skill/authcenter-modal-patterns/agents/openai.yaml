@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auth Center Modals"
+  short_description: "Build responsive Auth Center style modals, sheets, confirmations, and scroll-locked overlays."
+  default_prompt: "Use this skill to implement an Auth Center style modal with responsive desktop/mobile behavior, scroll lock, fixed close button, rounded corners, and destructive confirmation styling when needed."

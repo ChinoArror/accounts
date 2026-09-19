@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auth Center Avatar Crop"
+  short_description: "Build Auth Center avatar areas with the four-button Upload/Adjust/Delete/Restore layout and faster crop saving."
+  default_prompt: "Use this skill to implement an Auth Center style avatar or background image crop flow. Match the existing avatar card and four-button Upload/Adjust/Delete/Restore layout, preserve the original image, generate the cropped image for display/JWT, and optimize save speed."

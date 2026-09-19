@@ -43,6 +43,7 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - `/user/:uuid`: user account center, profile, email change, password change, register-code update, and login devices. Login device rows show the initiating `app_id`; direct Auth Center activity is recorded as `auth-center`.
 - `/dash`: admin dashboard.
 - `/dev/@name`: Test Identity detail page for admin review.
+- `/preview`: browser-only Test Identity Preview portal. It has no normal login entry.
 
 ## Admin Dashboard
 
@@ -67,6 +68,12 @@ Admins can create Test Identities from `/dash` → `Test Access`. A Test Identit
 - The terminal command calls `/api/test-auth/exchange` with `name + secret + target_subapp`.
 - Exchange returns a one-time `login_url`; the URL is valid for 60 seconds by default and can be consumed only once.
 - The actual test session is separate from that one-time URL and defaults to 30 minutes. It is configurable per identity.
+- Preview is off by default. When an admin enables it, the create, rotate, and detail views show a browser Preview link using the same Test Identity secret.
+- A Preview link uses `https://accounts.aryuki.com/preview#name=...&secret=...`. The fragment is removed from the browser address bar before exchange and is never put in a query string or pathname.
+- Preview creates a separate `test_preview_session` HttpOnly, Secure, SameSite=Strict cookie scoped to `/preview`; it never replaces the normal `sso_session`.
+- Manual QA can use Preview instead of CLI. Agents and CI should keep using the CLI or `/api/test-auth/exchange` flow.
+- Preview lists only active D1 apps allowed to the identity. Launches open the selected subapp in a new tab and create the same compatible app-specific test JWT/session shape used by the existing one-time-login flow. The source card keeps its launch indicator for two seconds, then returns to its ready state.
+- Disabling Preview revokes Preview sessions immediately. Rotating a secret invalidates old Preview links but leaves established sessions valid until expiry or manual revocation.
 - The JWT contains `identity_type=test`, `test_session=true`, `allowed_subapps`, `data_scope`, `data_scope_permissions`, and `session_id`.
 - Old subapps remain compatible and may treat test sessions as fully visible after JWT verification.
 - New subapps should read `identity_type`, `data_scope`, and `data_scope_permissions` and enforce public/private data access rules. Public scopes include same-level private scopes, for example `public_read` includes `private_read` but not `private_write`.
@@ -202,6 +209,7 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-test-identity-preview-2026-09-19.sql
 ```
 
 ## Avatar Editing

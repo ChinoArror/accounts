@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auth Center Theme"
+  short_description: "Recreate Auth Center colors, light/dark tokens, buttons, motion, page layout, and loading states."
+  default_prompt: "Use this skill to build a page matching Auth Center visual language. Use tokenized light/dark themes, consistent buttons, route motion, loading states, and optionally swap to a non-blue primary color."

@@ -165,7 +165,10 @@ CREATE TABLE register_codes (
     status TEXT NOT NULL DEFAULT 'unused',
     used_by_uuid TEXT,
     used_by_username TEXT,
-    used_at TEXT
+    used_at TEXT,
+    invited_email TEXT,
+    invite_expires_at TEXT,
+    invite_token_id TEXT
 );
 CREATE INDEX idx_register_codes_hash ON register_codes(code_hash);
 CREATE INDEX idx_register_codes_status ON register_codes(status);
@@ -177,9 +180,11 @@ CREATE TABLE register_code_uses (
     user_id TEXT NOT NULL,
     used_at TEXT NOT NULL,
     ip_hash TEXT,
+    country_code TEXT,
     FOREIGN KEY (user_id) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX idx_register_code_uses_code ON register_code_uses(code_id);
+CREATE UNIQUE INDEX idx_register_code_uses_one_per_code ON register_code_uses(code_id);
 
 CREATE TABLE auth_settings (
     key TEXT PRIMARY KEY,
@@ -237,6 +242,7 @@ CREATE TABLE IF NOT EXISTS test_identities (
   status TEXT NOT NULL DEFAULT 'active',
   allowed_subapps TEXT NOT NULL,
   target_default_subapp TEXT,
+  preview_enabled INTEGER NOT NULL DEFAULT 0,
   data_scope TEXT NOT NULL DEFAULT 'public_read',
   session_ttl_minutes INTEGER NOT NULL DEFAULT 30,
   one_time_token_ttl_seconds INTEGER NOT NULL DEFAULT 60,
