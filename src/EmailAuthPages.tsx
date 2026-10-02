@@ -1,11 +1,17 @@
 import React from 'react';
+import { adminRequest } from './adminSessionClient';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { CheckCircle2, Fingerprint, Github, KeyRound, LogOut, Mail, RefreshCw, Shield, Smartphone, UserCog } from 'lucide-react';
-import { motion } from 'motion/react';
+import { CheckCircle2, Fingerprint, Github, KeyRound, LogOut, Mail, Moon, RefreshCw, Shield, ShieldCheck, Smartphone, Sun, UserCog, ArrowRight, LoaderCircle } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { startAuthentication } from '@simplewebauthn/browser';
 import { ThemeToggle, useThemeMode } from './theme';
+import LegalFooter from './LegalFooter';
+import './landing.css';
 
 const API_BASE = '';
+
+type RegistrationDraft = { email: string; username: string; fullname: string; password: string; register_code: string; birthday: string; avatar_data: string; invite_token?: string };
+let registrationDraft: RegistrationDraft | null = null;
 
 type Rules = {
   mode: string;
@@ -28,18 +34,18 @@ function routeForToken(token: string, fallback = '/account/security') {
   }
 }
 
-function AuthFrame({ title, children }: { title: string; children: React.ReactNode }) {
+function AuthFrame({ title, children, login = false }: { title: string; children: React.ReactNode; login?: boolean }) {
   const { theme, setTheme } = useThemeMode('dark');
   return (
-    <div data-theme={theme} className="dashboard-theme fixed inset-0 overflow-y-auto">
-      <div className="ui-auth-shell min-h-dvh items-start py-8 md:items-center">
-        <div className="absolute right-4 top-4 sm:right-6 sm:top-6">
+    <div data-theme={theme} className="dashboard-theme fixed inset-0 flex flex-col overflow-y-auto">
+      <div className="ui-auth-shell ui-auth-shell-with-footer items-start pb-8 pt-20 md:items-center md:py-8" style={{ flex: '1 0 auto' }}>
+        <div className="absolute right-4 top-4 z-10 sm:right-6 sm:top-6">
           <ThemeToggle theme={theme} onChange={setTheme} />
         </div>
         <motion.main
           initial={{ opacity: 0, scale: 0.98, y: 18 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          className="ui-auth-card relative"
+          className={`ui-auth-card relative ${login ? 'ui-auth-card-login' : ''}`}
         >
           <div className="mb-6 flex justify-center">
             <div className="ui-logo-badge">
@@ -53,6 +59,7 @@ function AuthFrame({ title, children }: { title: string; children: React.ReactNo
           {children}
         </motion.main>
       </div>
+      <LegalFooter className="shrink-0" />
     </div>
   );
 }
@@ -127,7 +134,8 @@ function TurnstileBox({ siteKey, onToken, resetSignal = 0 }: { siteKey?: string;
     const existing = document.querySelector('script[data-turnstile-script="1"]') as HTMLScriptElement | null;
     if (existing) {
       render();
-      return;
+      existing.addEventListener('load', render);
+      return () => existing.removeEventListener('load', render);
     }
     const script = document.createElement('script');
     script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
@@ -175,10 +183,10 @@ export function LandingPage() {
       navigate(`/login?${params.toString()}`, { replace: true });
       return;
     }
-    fetch(`${API_BASE}/api/session`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/auth/session/continue`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (!data?.active) return;
+        if (!data?.ok) return;
         const role = data.user?.role || data.role;
         const uuid = data.user?.uuid || data.user?.id || data.uuid;
         navigate(role === 'admin' ? '/dash' : `/user/${uuid}`, { replace: true });
@@ -187,58 +195,42 @@ export function LandingPage() {
   }, [navigate]);
 
   return (
-    <div data-theme={theme} className="dashboard-theme min-h-dvh overflow-hidden bg-[var(--bg)]">
-      <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-5 md:px-8">
-        <header className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="ui-logo-badge h-11 w-11"><Shield className="h-5 w-5" /></div>
-            <span className="text-sm font-semibold text-[var(--text-primary)]">Auth Center</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link to="/login" className="ui-button-secondary no-underline">Login</Link>
-            <ThemeToggle theme={theme} onChange={setTheme} />
-          </div>
+    <div data-theme={theme} className="ac-landing">
+      <div className="ac-landing-shell">
+        <header className="ac-landing-header">
+          <Link className="ac-landing-brand" to="/" aria-label="Aryuki Auth Center home">
+            <span className="ac-landing-mark"><ShieldCheck size={23} strokeWidth={2} /></span>
+            <span>Aryuki <span className="ac-landing-brand-sub">/ Auth Center</span></span>
+          </Link>
+          <button className="ac-landing-theme" type="button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>
+            {theme === 'light' ? <Moon size={19} aria-hidden="true" /> : <Sun size={19} aria-hidden="true" />}
+          </button>
         </header>
 
-        <main className="grid flex-1 items-center gap-8 py-10 lg:grid-cols-[1.05fr_0.95fr]">
-          <motion.section initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Unified sign-in</p>
-            <h1 className="mt-4 text-4xl font-bold leading-tight text-[var(--text-primary)] md:text-6xl">Auth Center</h1>
-            <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-secondary)]">One account for email, passkey, GitHub, and app SSO.</p>
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-              <Link to="/login" className="ui-button-primary inline-flex items-center justify-center gap-2 no-underline">
-                <KeyRound className="h-4 w-4" /> Sign in
-              </Link>
-              <Link to="/register" className="ui-button-secondary inline-flex items-center justify-center gap-2 no-underline">
-                <Mail className="h-4 w-4" /> Create account
-              </Link>
+        <main className="ac-landing-main">
+          <motion.div className="ac-landing-content" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.42 }}>
+            <div className="ac-landing-intro">
+              <p className="ac-landing-eyebrow">Your secure starting point</p>
+              <h1>Auth Center</h1>
+              <p>One account for everything you do with Aryuki.</p>
             </div>
-          </motion.section>
 
-          <motion.section
-            initial={{ opacity: 0, scale: 0.97, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ delay: 0.08 }}
-            className="ui-card p-5 md:p-6"
-          >
-            <div className="grid gap-3">
-              {[
-                ['Password', 'Email or username'],
-                ['Email code', 'Six-digit login'],
-                ['Passkey', 'Fast device sign-in'],
-                ['GitHub', 'Bound account login'],
-              ].map(([title, text]) => (
-                <div key={title} className="ui-card-subtle flex items-center justify-between gap-4 p-4">
-                  <div>
-                    <p className="font-semibold text-[var(--text-primary)]">{title}</p>
-                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{text}</p>
-                  </div>
-                  <CheckCircle2 className="h-5 w-5 text-[var(--success)]" />
-                </div>
-              ))}
+            <div className="ac-landing-panel">
+              <a className="ac-landing-provider" href="/api/google/login"><span className="ac-landing-google" aria-hidden="true">G</span>Continue with Google</a>
+              <a className="ac-landing-provider" href="/api/github/login"><Github size={19} aria-hidden="true" />Continue with GitHub</a>
+              <div className="ac-landing-divider"><span>or</span></div>
+              <Link className="ac-landing-email" to="/login"><Mail size={19} aria-hidden="true" />Continue with email</Link>
+              <p className="ac-landing-fine">By continuing, you agree to the <Link to="/privacy">Privacy Policy</Link>.</p>
             </div>
-          </motion.section>
+
+            <p className="ac-landing-register">New here? <Link to="/register">Create an account <ArrowRight size={16} aria-hidden="true" /></Link></p>
+          </motion.div>
+
+          <motion.figure className="ac-landing-photo" initial={{ opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6, delay: 0.08 }}>
+            <img src="/auth-center-hero.webp" alt="A creative professional working at a desk" />
+          </motion.figure>
         </main>
+        <footer className="ac-landing-footer"><span>© {new Date().getFullYear()} Aryuki</span><Link to="/privacy">Privacy</Link></footer>
       </div>
     </div>
   );
@@ -260,6 +252,24 @@ export function EmailLoginPage() {
   const [loading, setLoading] = React.useState(false);
   const redirectUri = searchParams.get('redirect') || searchParams.get('redirect_uri') || '';
   const appId = searchParams.get('app_id') || searchParams.get('client_id') || 'auth-center';
+  const returnTo = searchParams.get('return') === '/welcomenewuser' ? '/welcomenewuser' : '';
+
+  React.useEffect(() => {
+    if (!redirectUri || !appId || returnTo) return;
+    const controller = new AbortController();
+    fetch(`${API_BASE}/api/auth/session/continue`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId, redirect_uri: redirectUri }), signal: controller.signal,
+    }).then((res) => res.ok ? res.json() : null).then((data) => {
+      if (!controller.signal.aborted && data?.redirect_to) window.location.replace(data.redirect_to);
+    }).catch(() => null);
+    return () => controller.abort();
+  }, [redirectUri, appId, returnTo]);
+
+  React.useEffect(() => {
+    const error = searchParams.get('error');
+    if (error) setMessage(error.replace(/_/g, ' '));
+  }, [searchParams]);
 
   React.useEffect(() => {
     if (resendCooldown <= 0) return undefined;
@@ -278,7 +288,7 @@ export function EmailLoginPage() {
       const target = data.token ? routeForToken(data.token) : '/account/security';
       if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
       else localStorage.removeItem('sso_admin_auth');
-      window.location.href = data.redirect_to || target;
+      window.location.href = returnTo || data.redirect_to || target;
     } catch (error: any) {
       setMessage(error.message);
       if (turnstile) {
@@ -318,7 +328,7 @@ export function EmailLoginPage() {
       const target = data.token ? routeForToken(data.token) : '/account/security';
       if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
       else localStorage.removeItem('sso_admin_auth');
-      window.location.href = data.redirect_to || target;
+      window.location.href = returnTo || data.redirect_to || target;
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -345,9 +355,9 @@ export function EmailLoginPage() {
       const target = routeForToken(data.token);
       if (data.token && target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
       else localStorage.removeItem('sso_admin_auth');
-      window.location.href = redirectUri
+      window.location.href = returnTo || (redirectUri
         ? `${redirectUri}${redirectUri.includes('?') ? '&' : '?'}token=${encodeURIComponent(data.token)}`
-        : target;
+        : target);
     } catch (error: any) {
       setMessage(error.message || 'Passkey login failed');
     } finally {
@@ -358,32 +368,36 @@ export function EmailLoginPage() {
   const githubHref = redirectUri
     ? `${API_BASE}/api/github/login?app_redirect=${encodeURIComponent(redirectUri)}&app_id=${encodeURIComponent(appId)}`
     : `${API_BASE}/api/github/login`;
+  const googleHref = redirectUri
+    ? `${API_BASE}/api/google/login?app_redirect=${encodeURIComponent(redirectUri)}&app_id=${encodeURIComponent(appId)}`
+    : `${API_BASE}/api/google/login`;
 
   return (
-    <AuthFrame title="Sign in">
-      <div className="mb-5 grid grid-cols-2 gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-alt)] p-1">
-        <button className="ui-nav-pill flex items-center justify-center gap-2 px-3 py-2" data-active={tab === 'password'} onClick={() => setTab('password')} type="button">
-          <Mail className="h-4 w-4" /> Password
-        </button>
-        <button className="ui-nav-pill flex items-center justify-center gap-2 px-3 py-2" data-active={tab === 'code'} onClick={() => setTab('code')} type="button">
-          <KeyRound className="h-4 w-4" /> Code
-        </button>
+    <AuthFrame title="Sign in" login>
+      <div className="ac-login-providers">
+        <a className="ac-login-provider" href={googleHref}><span className="ac-landing-google" aria-hidden="true">G</span>Continue with Google</a>
+        <a className="ac-login-provider" href={githubHref}><Github className="h-5 w-5" aria-hidden="true" />Continue with GitHub</a>
       </div>
+      <div className="ac-login-divider"><span>or</span></div>
 
       {tab === 'password' ? (
         <form onSubmit={login} className="space-y-4">
           <Field label="Email or name"><input required value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" /></Field>
-          <Field label="Password"><input type="password" required value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></Field>
-          {message.includes('Turnstile') || message.includes('人机') ? <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} /> : null}
-          <button className="ui-button-primary w-full" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <button className="ui-button-secondary flex items-center justify-center gap-2" type="button" onClick={passkeyLogin} disabled={loading}>
-              <Fingerprint className="h-4 w-4" /> Passkey
-            </button>
-            <a className="ui-button-secondary flex items-center justify-center gap-2 no-underline" href={githubHref}>
-              <Github className="h-4 w-4" /> GitHub
-            </a>
-          </div>
+          <AnimatePresence initial={false}>
+            {identifier.trim() ? (
+              <motion.div key="password-fields" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}>
+                <div className="space-y-4 pt-1">
+                  <Field label="Password"><input type="password" required value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></Field>
+                  {message.includes('Turnstile') || message.includes('人机') ? <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} /> : null}
+                  <button className="ui-button-primary w-full" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
+                  <button className="ac-login-switch" type="button" onClick={() => { setEmail(identifier.includes('@') ? identifier : ''); setTab('code'); }}>Use email code login</button>
+                  <button className="ui-button-secondary flex w-full items-center justify-center gap-2" type="button" onClick={passkeyLogin} disabled={loading}>
+                    <Fingerprint className="h-4 w-4" /> Passkey
+                  </button>
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </form>
       ) : (
         <form onSubmit={verifyOtp} className="space-y-4">
@@ -406,6 +420,7 @@ export function EmailLoginPage() {
               <button className="ui-button-primary w-full" disabled={loading || code.length !== 6}>{loading ? 'Signing in...' : 'Sign in'}</button>
             </>
           )}
+          <button className="ac-login-switch" type="button" onClick={() => setTab('password')}>Use password login</button>
         </form>
       )}
 
@@ -424,8 +439,6 @@ export function RegisterEmailPage() {
   const [searchParams] = useSearchParams();
   const inviteToken = searchParams.get('invite') || '';
   const [form, setForm] = React.useState({ email: '', username: '', fullname: '', password: '', register_code: '', birthday: '', avatar_data: '' });
-  const [turnstile, setTurnstile] = React.useState('');
-  const [turnstileReset, setTurnstileReset] = React.useState(0);
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [invitation, setInvitation] = React.useState<{ expires_at: string; expires_at_display: string } | null>(null);
@@ -457,24 +470,8 @@ export function RegisterEmailPage() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    setLoading(true);
-    setMessage('');
-    try {
-      const data = await apiPost('/api/auth/register', { ...form, confirm_password: form.password, turnstile_token: turnstile, invite_token: inviteToken || undefined });
-      if (data.token) {
-        const target = data.redirect_to || routeForToken(data.token);
-        if (target === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
-        window.location.assign(target);
-        return;
-      }
-      navigate(`/verify-email?email=${encodeURIComponent(form.email)}&message=${encodeURIComponent(data.message)}`);
-    } catch (error: any) {
-      setMessage(error.message);
-      setTurnstile('');
-      setTurnstileReset((value) => value + 1);
-    } finally {
-      setLoading(false);
-    }
+    registrationDraft = { ...form, invite_token: inviteToken || undefined };
+    navigate('/welcomenewuser?channel=email');
   };
 
   return (
@@ -496,11 +493,128 @@ export function RegisterEmailPage() {
           <Field label="Birthday"><input type="date" value={form.birthday} onChange={(event) => setForm({ ...form, birthday: event.target.value })} /></Field>
           <Field label="Avatar"><input type="file" accept="image/*" onChange={(event) => readAvatar(event.target.files?.[0])} /></Field>
         </div>
-        <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
-        <button className="ui-button-primary w-full" disabled={loading || inviteLoading || (!!inviteToken && !invitation) || !turnstile || (!invitation && (!rules?.email_registration_allowed || rules.external_registration_enabled === false))}>{loading ? 'Creating...' : 'Create account'}</button>
+        <button className="ui-button-primary w-full" disabled={loading || inviteLoading || (!!inviteToken && !invitation) || (!invitation && (!rules?.email_registration_allowed || rules.external_registration_enabled === false))}>{loading ? 'Creating...' : 'Continue'}</button>
       </form>
       {message && (!inviteToken || invitation) ? <div className="mt-4"><Notice tone="danger">{message}</Notice></div> : null}
       <Link to="/login" className="mt-5 block text-center font-semibold text-[var(--primary)] no-underline">Back to sign in</Link>
+    </AuthFrame>
+  );
+}
+
+type OAuthPendingView = {
+  provider: 'github' | 'google';
+  email: string;
+  name: string;
+  avatar_url: string | null;
+  decision: 'new_account' | 'link_existing' | 'verify_existing_first' | 'closed' | 'unsupported_domain';
+  require_turnstile: boolean;
+  site_key: string;
+  can_bind: boolean;
+};
+
+export function WelcomeNewUserPage() {
+  const rules = useRegistrationRules();
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const emailMode = params.get('channel') === 'email';
+  const [pending, setPending] = React.useState<OAuthPendingView | null>(null);
+  const [loading, setLoading] = React.useState(!emailMode);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [turnstile, setTurnstile] = React.useState('');
+  const [resetSignal, setResetSignal] = React.useState(0);
+  const [message, setMessage] = React.useState('');
+  const [progress, setProgress] = React.useState(18);
+  const autoStarted = React.useRef(false);
+
+  React.useEffect(() => {
+    if (emailMode) return;
+    fetch('/api/auth/oauth/pending', { credentials: 'include' })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || 'This sign-in has expired.');
+        setPending(data);
+        setProgress(42);
+      })
+      .catch((error) => setMessage(error.message))
+      .finally(() => setLoading(false));
+  }, [emailMode]);
+
+  const finish = (data: any) => {
+    if (data.token) {
+      const target = data.redirect_to || routeForToken(data.token);
+      if (routeForToken(data.token) === '/dash') localStorage.setItem('sso_admin_auth', `Bearer ${data.token}`);
+      else localStorage.removeItem('sso_admin_auth');
+      window.location.assign(target);
+      return;
+    }
+    navigate('/login');
+  };
+
+  const submit = async () => {
+    if (submitting) return;
+    if (emailMode && (!registrationDraft || !turnstile)) return;
+    if (!emailMode && (!pending || (pending.require_turnstile && !turnstile))) return;
+    setSubmitting(true);
+    setMessage('');
+    setProgress(70);
+    try {
+      const started = Date.now();
+      const data = emailMode
+        ? await apiPost('/api/auth/register', { ...registrationDraft!, confirm_password: registrationDraft!.password, turnstile_token: turnstile })
+        : await apiPost('/api/auth/oauth/complete', { turnstile_token: turnstile });
+      await new Promise((resolve) => window.setTimeout(resolve, Math.max(0, 2000 - (Date.now() - started))));
+      setProgress(100);
+      if (emailMode) {
+        const email = registrationDraft!.email;
+        registrationDraft = null;
+        if (!data.token) {
+          navigate(`/verify-email?email=${encodeURIComponent(email)}&message=${encodeURIComponent(data.message || 'Verification email sent.')}`);
+          return;
+        }
+      }
+      finish(data);
+    } catch (error: any) {
+      setMessage(error.message || 'Unable to continue.');
+      setProgress(42);
+      setTurnstile('');
+      setResetSignal((value) => value + 1);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (emailMode || !pending || pending.decision !== 'new_account' || pending.require_turnstile || autoStarted.current) return;
+    autoStarted.current = true;
+    void submit();
+  }, [emailMode, pending]);
+
+  const label = emailMode ? 'Email' : pending?.provider === 'github' ? 'GitHub' : 'Google';
+  const draftMissing = emailMode && !registrationDraft;
+  const canSubmit = emailMode ? !!registrationDraft && !!turnstile : pending?.decision === 'link_existing'
+    ? !!pending.can_bind : !!pending && pending.decision === 'new_account' && (!pending.require_turnstile || !!turnstile);
+
+  return (
+    <AuthFrame title="Welcome">
+      <div className="space-y-5">
+        <div className="flex items-center gap-3 rounded-[12px] border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3">
+          {pending?.avatar_url ? <img className="h-11 w-11 rounded-[10px] object-cover" src={pending.avatar_url} alt="" /> : <div className="ui-logo-badge h-11 w-11"><Shield className="h-5 w-5" /></div>}
+          <div className="min-w-0"><p className="font-semibold text-[var(--text-primary)]">{pending?.name || registrationDraft?.fullname || 'Your account'}</p><p className="break-all text-sm text-[var(--text-secondary)]">{pending?.email || registrationDraft?.email || label}</p></div>
+        </div>
+        <div aria-label="Registration progress" className="h-2 overflow-hidden rounded-full bg-[var(--surface-alt)]"><div className="h-full rounded-full bg-[var(--primary)] transition-[width] duration-700" style={{ width: `${progress}%` }} /></div>
+        {loading || submitting ? <p className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"><LoaderCircle className="h-4 w-4 animate-spin" /> {submitting ? 'Creating your account...' : 'Checking your account...'}</p> : null}
+        {draftMissing ? <Notice tone="danger">Registration details were cleared. Please complete the form again.</Notice> : null}
+        {!emailMode && pending?.decision === 'link_existing' ? <Notice>This email belongs to an existing account. Sign in to link {label} to it.</Notice> : null}
+        {!emailMode && pending?.decision === 'verify_existing_first' ? <Notice tone="danger">Please verify your existing email account before linking {label}.</Notice> : null}
+        {!emailMode && pending?.decision === 'closed' ? <Notice tone="danger">External registration is currently closed.</Notice> : null}
+        {!emailMode && pending?.decision === 'unsupported_domain' ? <Notice tone="danger">This email domain is not supported for registration.</Notice> : null}
+        {!loading && (emailMode || pending?.decision === 'new_account') && (emailMode || pending?.require_turnstile)
+          ? <TurnstileBox siteKey={emailMode ? rules?.turnstile_site_key : pending?.site_key} onToken={setTurnstile} resetSignal={resetSignal} /> : null}
+        {message ? <Notice tone="danger">{message}</Notice> : null}
+        {pending?.decision === 'link_existing' && !pending.can_bind ? <Link className="ui-button-primary block text-center no-underline" to="/login?return=%2Fwelcomenewuser">Sign in to link</Link> : null}
+        {!loading && canSubmit && (emailMode || pending?.decision === 'link_existing' || pending?.require_turnstile) ? <button className="ui-button-primary w-full" type="button" onClick={() => void submit()} disabled={submitting}>{pending?.decision === 'link_existing' ? 'Link account' : 'Create account'}</button> : null}
+        <Link className="block text-center text-sm font-semibold text-[var(--primary)] no-underline" to={emailMode ? '/register' : '/login'}>{emailMode ? 'Back to registration' : 'Back to sign in'}</Link>
+      </div>
     </AuthFrame>
   );
 }
@@ -690,9 +804,10 @@ export function AccountSecurityPage() {
   const changePassword = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
-      const data = await apiPost('/api/account/password/change', passwordForm);
+      const data = await apiPost(user?.has_password === false ? '/api/account/password/set' : '/api/account/password/change', passwordForm);
       setMessage(data.message);
       setPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+      await load();
     } catch (error: any) {
       setMessage(error.message);
       setEmailForm((current) => ({ ...current, turnstile: '' }));
@@ -760,12 +875,13 @@ export function AccountSecurityPage() {
           </section>
 
           <section className="ui-card p-5 md:p-6">
+            <Link className="ui-button-secondary mb-5 flex items-center justify-center gap-2 no-underline" to={`/user/${encodeURIComponent(user.uuid)}?panel=oauth`}><Github className="h-4 w-4" /> Bind other account</Link>
             <form onSubmit={changePassword} className="space-y-4">
               <h2 className="text-lg font-semibold">Password</h2>
-              <Field label="Old password"><input type="password" value={passwordForm.old_password} onChange={(event) => setPasswordForm({ ...passwordForm, old_password: event.target.value })} /></Field>
+              {user.has_password !== false ? <Field label="Old password"><input type="password" value={passwordForm.old_password} onChange={(event) => setPasswordForm({ ...passwordForm, old_password: event.target.value })} /></Field> : null}
               <Field label="New password"><input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /></Field>
               <Field label="Confirm password"><input type="password" value={passwordForm.confirm_password} onChange={(event) => setPasswordForm({ ...passwordForm, confirm_password: event.target.value })} /></Field>
-              <button className="ui-button-primary w-full">Update password</button>
+              <button className="ui-button-primary w-full">{user.has_password === false ? 'Add password' : 'Update password'}</button>
             </form>
             <form onSubmit={applyRegisterCode} className="mt-6 space-y-4 border-t border-[var(--border)] pt-5">
               <h2 className="text-lg font-semibold">Register code</h2>
@@ -804,18 +920,12 @@ export function AdminSecurityPage() {
   const [section, setSection] = React.useState<'users' | 'codes' | 'rules' | 'logs' | 'emails'>('users');
   const [data, setData] = React.useState<any>({});
   const [message, setMessage] = React.useState('');
-  const authHeader = localStorage.getItem('sso_admin_auth') || '';
-
   const adminFetch = React.useCallback(async (path: string, options?: RequestInit) => {
-    const res = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers: { 'Content-Type': 'application/json', Authorization: authHeader, ...(options?.headers || {}) },
-      credentials: 'include',
-    });
+    const res = await adminRequest(`${API_BASE}${path}`, options);
     const payload = await res.json().catch(() => ({}));
     if (!res.ok || payload.ok === false) throw new Error(payload.error || payload.message || 'Request failed');
     return payload;
-  }, [authHeader]);
+  }, []);
 
   const load = React.useCallback(async () => {
     const paths = {

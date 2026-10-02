@@ -5,12 +5,45 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Aryuki Auth Center</title>
+  <script>
+    try {
+      const savedTheme = localStorage.getItem('auth_center_theme');
+      document.documentElement.dataset.theme = savedTheme === 'light' || savedTheme === 'dark'
+        ? savedTheme
+        : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch (_) {}
+    if (location.pathname.replace(/\/$/, '') === '/dash') document.documentElement.classList.add('booting-dash');
+  </script>
+  <style>
+    html { background: #f5f5f5; color: #111; }
+    html[data-theme="dark"] { background: #0b0b0c; color: #f5f5f5; }
+    body { margin: 0; background: inherit; }
+    #dash-boot { display: none; min-height: 100dvh; align-items: center; justify-content: center; flex-direction: column; gap: 13px; font: 14px system-ui, sans-serif; }
+    html.booting-dash #dash-boot { display: flex; }
+    #dash-boot strong { font-size: 17px; }
+    #dash-boot span { opacity: .65; }
+    #dash-boot::before { content: ''; width: 32px; height: 32px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: dash-boot-spin .8s linear infinite; }
+    @keyframes dash-boot-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #dash-boot::before { animation: none; } }
+  </style>
   <link rel="icon" type="image/svg+xml"
     href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2310B981' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3C/svg%3E">
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-9NV66HSM65"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag('js', new Date());
+    gtag('config', 'G-9NV66HSM65', {
+      send_page_view: false,
+      allow_google_signals: false,
+      allow_ad_personalization_signals: false
+    });
+  </script>
 </head>
 
-<body style="background-color: #0B0F19; margin: 0; padding: 0;">
-  <div id="root"></div>
+<body>
+  <div id="root"><div id="dash-boot" role="status"><strong>Auth Center</strong><span>Restoring your session...</span></div></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

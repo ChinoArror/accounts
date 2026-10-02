@@ -1,3 +1,7 @@
+DROP TABLE IF EXISTS registration_events;
+DROP TABLE IF EXISTS oauth_pending;
+DROP TABLE IF EXISTS oauth_states;
+DROP TABLE IF EXISTS oauth_identities;
 DROP TABLE IF EXISTS registration_counters;
 DROP TABLE IF EXISTS email_jobs;
 DROP TABLE IF EXISTS auth_audit_logs;
@@ -82,9 +86,35 @@ CREATE TABLE auth_sessions (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     revoked_at TEXT,
+    previous_refresh_token_hash TEXT,
+    previous_refresh_until TEXT,
     FOREIGN KEY (user_id) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX idx_auth_sessions_user ON auth_sessions(user_id, revoked_at, expires_at);
+CREATE INDEX idx_auth_sessions_refresh ON auth_sessions(refresh_token_hash);
+
+CREATE TABLE admin_auth_sessions (
+    id TEXT PRIMARY KEY,
+    refresh_token_hash TEXT NOT NULL,
+    previous_refresh_token_hash TEXT,
+    previous_refresh_until TEXT,
+    user_agent TEXT,
+    ip_hash TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX idx_admin_auth_sessions_refresh ON admin_auth_sessions(refresh_token_hash);
+
+CREATE TABLE session_app_activity (
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, app_id)
+);
+CREATE INDEX idx_session_app_activity_user ON session_app_activity(user_id, last_seen_at);
 
 CREATE TABLE apps (
     app_id TEXT PRIMARY KEY,
@@ -195,7 +225,59 @@ CREATE TABLE auth_settings (
 INSERT INTO auth_settings (key, value, updated_at)
 VALUES
     ('external_registration_enabled', 'true', CURRENT_TIMESTAMP),
-    ('default_registration_config', '{"cookie_expiry_days":7,"permissions":[]}', CURRENT_TIMESTAMP);
+    ('default_registration_config', '{"cookie_expiry_days":7,"permissions":[]}', CURRENT_TIMESTAMP),
+    ('oauth_turnstile_threshold_per_ip_hour', '3', CURRENT_TIMESTAMP);
+
+CREATE TABLE oauth_identities (
+    provider TEXT NOT NULL CHECK(provider IN ('github', 'google')),
+    provider_subject TEXT NOT NULL,
+    user_uuid TEXT NOT NULL,
+    provider_email TEXT,
+    provider_username TEXT,
+    linked_at TEXT NOT NULL,
+    last_login_at TEXT,
+    PRIMARY KEY (provider, provider_subject),
+    UNIQUE (provider, user_uuid)
+);
+CREATE INDEX idx_oauth_identities_user ON oauth_identities(user_uuid);
+CREATE TRIGGER users_remove_oauth_bindings AFTER DELETE ON users
+BEGIN
+    DELETE FROM oauth_identities WHERE user_uuid = OLD.uuid;
+END;
+
+CREATE TABLE oauth_states (
+    state_hash TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK(provider IN ('github', 'google')),
+    verifier TEXT,
+    nonce TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+);
+CREATE INDEX idx_oauth_states_expiry ON oauth_states(expires_at);
+
+CREATE TABLE oauth_pending (
+    ticket_hash TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK(provider IN ('github', 'google')),
+    provider_subject TEXT NOT NULL,
+    email TEXT NOT NULL,
+    profile_json TEXT NOT NULL,
+    app_id TEXT,
+    redirect_uri TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE INDEX idx_oauth_pending_expiry ON oauth_pending(expires_at);
+
+CREATE TABLE registration_events (
+    id TEXT PRIMARY KEY,
+    user_uuid TEXT NOT NULL UNIQUE,
+    channel TEXT NOT NULL CHECK(channel IN ('email', 'github', 'google')),
+    source TEXT NOT NULL DEFAULT 'external',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_registration_events_created ON registration_events(created_at, channel);
 
 CREATE TABLE auth_audit_logs (
     id TEXT PRIMARY KEY,

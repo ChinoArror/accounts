@@ -1,5 +1,7 @@
 # Auth Center
 
+> Updated: 2026-09-30. The current subapp integration baseline is [统一登录与静默续期-2026-09-30.md](Subapp-Docs子应用配置文档/统一登录与静默续期-2026-09-30.md). Older examples are being updated gradually; follow the dated guide when they differ.
+
 Auth Center is a Cloudflare Workers based identity center for SSO, account management, subapp access control, quotas, passkeys, GitHub login, email authentication, and usage analytics.
 
 It is designed so child apps only receive and verify JWTs. Email, password, OTP, registration, passkey, GitHub binding, session management, and permission management stay inside Auth Center.
@@ -10,7 +12,7 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - Combined login page at `/login`
 - Email or username + password login
 - Email OTP login
-- GitHub login for bound users
+- GitHub and Google OAuth sign-in for bound users, plus external OAuth registration
 - Passkey login for bound users
 - Email registration at `/register`
 - Optional register-code configuration during registration
@@ -35,13 +37,16 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 ## Main Routes
 
 - `/`: landing page. If already signed in, redirects to `/dash` for admins or `/user/:uuid` for users.
-- `/login`: combined password, OTP, passkey, and GitHub login.
+- `/login`: combined password, OTP, passkey, GitHub, and Google login.
 - `/register`: email registration with optional register code.
+- `/welcomenewuser`: OAuth account creation/linking and email-registration Turnstile step.
 - `/verify-email`: verification notice and resend page.
 - `/forgot-password`: password reset request.
 - `/reset-password`: password reset form.
 - `/user/:uuid`: user account center, profile, email change, password change, register-code update, and login devices. Login device rows show the initiating `app_id`; direct Auth Center activity is recorded as `auth-center`.
+- `/user/docs`: user-facing guide for sign-in, registration, profile, account security, and devices. Linked from the user center.
 - `/dash`: admin dashboard.
+- `/dev/docs`: the complete subapp integration documentation library, including SSO, OAuth, Test Identity, quotas, and troubleshooting. Select or search individual documents; document links work within the library.
 - `/dev/@name`: Test Identity detail page for admin review.
 - `/preview`: browser-only Test Identity Preview portal. It has no normal login entry.
 
@@ -56,7 +61,27 @@ Dashboard tabs:
 - Test Access
 - Statistics
 
-The Permissions tab is now the subapp permission and quota management surface. It uses real D1 data from `users`, `apps`, `user_apps`, and `auth_audit_logs`.
+The Permissions tab is now the subapp permission and quota management surface. It uses real D1 data from `users`, `apps`, `user_apps`, and `auth_audit_logs`. Register also controls the per-IP hourly OAuth sign-up count before Turnstile is required (default: 3). Statistics shows D1-backed external registrations by email, GitHub, and Google, with daily/monthly views separate from access analytics.
+
+## OAuth And External Registration
+
+- GitHub uses the existing `/api/github/login` and `/api/github/callback` routes. Request `read:user user:email` in the GitHub OAuth App. Existing linked GitHub IDs can still sign in even when GitHub does not expose a verified email; new accounts require a verified primary email.
+- Create a **Web application** OAuth client in Google Cloud. Set the exact Authorized redirect URI to `https://accounts.aryuki.com/api/google/callback` (no trailing slash). `https://accounts.aryuki.com` is the optional Authorized JavaScript origin. Base scopes are `openid email profile`.
+- To configure both values in one step, set the Worker secret `GOOGLE_OAUTH_CREDENTIALS` to JSON such as `{"client_id":"...","client_secret":"..."}` using `npx wrangler secret put GOOGLE_OAUTH_CREDENTIALS`. Alternatively, set `GOOGLE_CLIENT_ID` in vars and `GOOGLE_CLIENT_SECRET` as a separate Worker secret. Google and GitHub buttons are always displayed; incomplete provider credentials produce a login error. Never put credentials in Git, URLs, or frontend code.
+- Birthday is optional: enable Google People API and its `user.birthday.read` scope, then set `GOOGLE_BIRTHDAY_SCOPE_ENABLED="true"` only after consent-screen and verification requirements are satisfied. GitHub has no standard birthday field. Missing/denied birthday data stays empty.
+- Linked provider subjects sign in directly. Unlinked identities enter `/welcomenewuser`. Matching email alone never links or logs into an existing account: the user must first sign in to that account. A signed-in account without email may attach the verified provider email without a second email code. Disabled/pending accounts cannot be taken over.
+- Public email/GitHub/Google creation obeys Register's External registration switch and current registration window/domain rules. New OAuth users receive the current default app permissions and cookie lifetime once; changing defaults later does not rewrite existing users. Bound-account login and proven account linking still work when public registration is closed.
+- Email registration always solves Turnstile on `/welcomenewuser`. New GitHub/Google registrations solve it only after the configured count of unbound OAuth attempts from the same IP within one hour; existing global/IP hard limits still apply. OAuth state and pending tickets expire after 10 minutes, and the Worker cron removes expired rows.
+- Registration statistics count successful account creations once per UUID. Pending email accounts are included and shown separately; old events are backfilled only when audit evidence exists. The chart states its traceable history start and uses Asia/Taipei day/month buckets.
+- OAuth-only users can add a password from `/account/security`. The user and admin user-detail pages provide a **Bind other account** modal for GitHub or Google; old binding-link routes are retired. Bound providers show their account identity instead of another bind button. Unlinking requires confirmation and removes only the provider association, never the Auth Center account email. Admins also see the provider's immutable subject ID and linked time. Older links without saved provider profile details gain them on their next OAuth sign-in; an Auth Center email shown as fallback is labelled as such. The JWT retains `sub`/`uuid`, `role`, `email`, `avatar_url`, and the existing subapp callback token contract; `auth_provider` identifies the current sign-in method.
+- The `/login` page, including subapp redirects, begins with an email/username field and expands the password controls after entry. Google/GitHub remain available immediately; email-code and Passkey flows still use the same backend. Footer links now follow the light/dark page theme, and the dashboard footer stays at the bottom during loading.
+- On 2026-09-30, existing GitHub/Google identity links and legacy `github_id` values were cleared. Users must bind the desired provider again; user UUIDs and permissions are unchanged. Do not rerun the old OAuth migration after this cleanup, because it contains a legacy GitHub-binding backfill.
+
+## Durable SSO Sessions (2026-09-30)
+
+New logins through email, OTP, username, Passkey, GitHub, Google and admin credentials issue a short-lived access JWT and a hashed, revocable D1 refresh session. The HttpOnly `auth_refresh` cookie lasts for the lesser of the account's `cookie_expiry_days` and the global refresh limit; the admin uses `ADMIN_COOKIE_EXPIRY_DAYS`. Renewal never extends the original absolute expiry. `/api/verify` checks user/app permission and new-session revocation. The original subapp callback `?token=...` and JWT role/UUID fields remain unchanged.
+
+Subapps already redirecting expired JWTs back to `/login?app_id=...&redirect=...` need no login-code change. Auth Center silently renews and returns a fresh JWT if its cookie is valid. A subapp that only shows an error, or has a separate shorter local cookie, must add that redirect itself; Auth Center cannot modify a cross-site cookie. The user device list records all visited app IDs for a session. The internal `/api/auth/session/continue` endpoint is for same-origin Auth Center pages, not for direct subapp use.
 
 ## Test Identity Login
 
@@ -164,6 +189,9 @@ PUBLIC_BASE_URL = "https://accounts.example.com"
 JWT_ISSUER = "auth-center"
 EMAIL_FROM = "noreply@accounts.example.com"
 TURNSTILE_SITE_KEY = "0x..."
+# Optional alternative to the GOOGLE_OAUTH_CREDENTIALS Worker secret:
+# GOOGLE_CLIENT_ID = "..."
+GOOGLE_BIRTHDAY_SCOPE_ENABLED = "false"
 REGISTRATION_MODE = "open"
 REGISTRATION_START_AT = ""
 REGISTRATION_END_AT = ""
@@ -188,6 +216,8 @@ JWT_SECRET
 TURNSTILE_SECRET_KEY
 PASSWORD_PEPPER
 GITHUB_CLIENT_SECRET
+GOOGLE_CLIENT_SECRET
+GOOGLE_OAUTH_CREDENTIALS (recommended single JSON secret; alternative to the separate ID/Secret pair)
 CF_API_TOKEN
 ```
 
@@ -210,7 +240,12 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-test-identity-preview-2026-09-19.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-external-registration-2026-09-29.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-session-and-oauth-cleanup-2026-09-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-binding-details-2026-09-30.sql
 ```
+
+`schema.sql` contains `DROP TABLE` statements and is **only** for a fresh disposable database. Run each migration once on an existing D1. The 2026-09-29 OAuth migration must not be rerun after the 2026-09-30 binding cleanup, or its legacy GitHub backfill will recreate links.
 
 ## Avatar Editing
 
@@ -250,6 +285,12 @@ npm install
 npm run build
 npx wrangler deploy
 ```
+
+### Online Documentation
+
+`/dev/docs` imports every Markdown file in `Subapp-Docs子应用配置文档/` during the Vite build. `/user/docs` imports `docs/user-guide.md`. These files are the only content sources: adding, deleting, or editing a guide is reflected automatically in the **next build and deployment**, without editing a second online copy. The pages show the deployment build date (Asia/Taipei); each guide also shows its own `更新时间`/`更新` date. Update that date when revising a guide. Local edits alone cannot change the live Worker. The older guides remain available, but new subapps should start with the dated unified-login guide.
+
+`.github/workflows/publish-docs.yml` builds and deploys automatically when documentation sources are pushed to `master`. Before relying on this, configure the GitHub repository secrets `CLOUDFLARE_API_TOKEN` (a token authorized to deploy this Worker) and `CLOUDFLARE_ACCOUNT_ID`. Changes on other branches or unpushed local edits still require a merge/push to `master` or a manual deployment with the commands above.
 
 ## Useful Verification
 

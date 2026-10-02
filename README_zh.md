@@ -1,5 +1,7 @@
 # Auth Center
 
+> 更新时间：2026-09-30。新子应用请以[统一登录与静默续期接入指南](Subapp-Docs子应用配置文档/统一登录与静默续期-2026-09-30.md)为准；目录内旧示例正在逐步更新，冲突时以有日期的新指南为准。
+
 Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SSO、账号管理、子应用权限、额度管理、Passkey、GitHub 登录、邮箱认证和访问统计。
 
 设计原则是：子应用只接收并校验 JWT。邮箱、密码、验证码、注册、Passkey、GitHub 绑定、会话管理和权限管理都由 Auth Center 统一处理。
@@ -10,7 +12,7 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 - 合并登录页 `/login`
 - 邮箱或用户名 + 密码登录
 - 邮箱验证码登录
-- 已绑定用户可使用 GitHub 登录
+- 已绑定用户可使用 GitHub、Google 登录；未绑定者可走 OAuth 外部注册
 - 已绑定用户可使用 Passkey 登录
 - 邮箱注册页 `/register`
 - 注册时可选 register code，用于应用对应配置
@@ -35,13 +37,16 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 ## 主要路由
 
 - `/`：落地页。已登录时，管理员跳到 `/dash`，普通用户跳到 `/user/:uuid`。
-- `/login`：密码、验证码、Passkey、GitHub 的合并登录页。
+- `/login`：密码、验证码、Passkey、GitHub、Google 的合并登录页。
 - `/register`：邮箱注册页，可选注册码。
+- `/welcomenewuser`：OAuth 注册/绑定与邮箱注册的 Turnstile 验证步骤。
 - `/verify-email`：邮箱验证提示和重发页面。
 - `/forgot-password`：发送重置密码邮件。
 - `/reset-password`：设置新密码。
 - `/user/:uuid`：用户中心，包含资料、邮箱、密码、注册码更新和登录设备。登录设备会显示发起登录的 `app_id`，直接在 Auth Center 中发起的登录记为 `auth-center`。
+- `/user/docs`：面向普通用户的独立教程，说明登录、注册、资料、账号安全及登录设备；用户中心有入口。
 - `/dash`：管理员后台。
+- `/dev/docs`：完整的子应用接入文档库，包含统一登录、OAuth、测试身份、用量限制和排错；可切换和搜索各文件，文档间链接可直接跳转。
 - `/dev/@name`：测试身份详情页，供 admin 查看活动和日志。
 - `/preview`：仅供测试身份使用的浏览器 Preview 门户，不提供普通登录入口。
 
@@ -59,6 +64,28 @@ Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SS
 ### 子应用权限与额度
 
 Permissions 页使用真实 D1 数据，来源包括 `users`、`apps`、`user_apps` 和 `auth_audit_logs`。
+
+Register 页可设置同一 IP 每小时 OAuth 未绑定注册尝试次数，超过阈值才要求 GitHub/Google 新用户通过 Turnstile，默认阈值为 3。Statistics 页以 D1 实际建号事件展示邮箱、GitHub、Google 的总量与按日/月趋势；访问统计仍独立展示。
+
+## OAuth 与外部注册
+
+- GitHub 沿用 `/api/github/login` 与 `/api/github/callback`，OAuth App 申请 `read:user user:email`。已绑定的旧 GitHub ID 即使未提供已验证邮箱仍可登录；新建账号必须取得已验证的主邮箱。
+- 在 Google Cloud 创建 **Web application** 类型的 OAuth 客户端，Authorized redirect URI 精确填写 `https://accounts.aryuki.com/api/google/callback`，末尾不加 `/`。如需 JavaScript origin，填 `https://accounts.aryuki.com`。基础 scope 为 `openid email profile`。
+- 推荐只设置一个 Worker secret：`npx wrangler secret put GOOGLE_OAUTH_CREDENTIALS`，内容为 `{"client_id":"...","client_secret":"..."}`。也可分别在 vars 设置真实 `GOOGLE_CLIENT_ID`，并通过 Wrangler secret 设置 `GOOGLE_CLIENT_SECRET`。Google、GitHub 按钮始终显示；凭据不完整时登录会报错。不能把凭据写入 Git、URL 或前端。
+- 生日为可选信息：启用 People API、申请 `user.birthday.read` 权限，完成同意屏幕及可能的应用验证后，才把 `GOOGLE_BIRTHDAY_SCOPE_ENABLED` 设为 `true`。GitHub 常规资料没有生日；未授权或缺失时保持空值。
+- 已绑定的 provider subject 直接登录；未绑定身份进入 `/welcomenewuser`。仅凭邮箱相同绝不接管旧账号，必须先登录旧账号再确认绑定。已登录但尚无邮箱的账号，可直接绑定 provider 返回的已验证邮箱，无需二次邮件验证码。待验证或停用账号不会被自动激活。
+- 邮箱、GitHub、Google 公开建号均遵守 Register 的 External registration 开关、开放时间和邮箱域规则。新 OAuth 用户只在建号时应用一次默认应用权限与 cookie 天数；修改默认配置不会覆盖已创建用户。关闭外部注册不影响已绑定用户登录和已证明身份的旧账号绑定。
+- 邮箱注册每次都在 `/welcomenewuser` 完成 Turnstile。GitHub/Google 新建超过同 IP 每小时阈值时才出现验证；全站/单 IP 硬性注册限额依旧有效。OAuth state 与待完成票据 10 分钟失效，由定时任务清理。
+- 注册统计按 UUID 仅计一次成功建号；待验证的邮箱账号会计入并单独显示数量。旧记录只回填可由安全日志证明的部分，图表标明可追溯起点，以 Asia/Taipei 时区按日/月统计。
+- OAuth-only 用户可在 `/account/security` 设置密码。用户详情和管理后台用户详情统一使用 **Bind other account** 弹窗选择 GitHub/Google；旧绑定链接已废弃。已绑定渠道显示其账号资料，不再显示重复绑定按钮；解绑需二次确认，只删除渠道关联，不删除 Auth Center 账号邮箱。管理员还可查看渠道唯一 ID 与绑定时间。历史绑定若缺少渠道资料，下次 OAuth 登录后自动补齐；若显示账号邮箱作为候补，会明确标注为账号邮箱。JWT 继续包含 `sub`/`uuid`、`role`、`email`、`avatar_url`，子应用回调 token 格式不变；`auth_provider` 表示本次登录方式。
+- `/login`（含子应用跳转登录）先显示邮箱/用户名，输入后展开密码操作；Google/GitHub 按钮立即可用，邮箱验证码与 Passkey 的后端流程不变。页脚随亮/暗主题融入页面，Dashboard 加载时页脚固定在页面底部。
+- 2026-09-30 已清除现存 GitHub/Google 绑定及旧 `github_id` 对应值；受影响用户需重新绑定，原 UUID、权限和资产不变。清理后禁止重跑含旧 GitHub 回填语句的 OAuth migration。
+
+## 长期会话与静默续登（2026-09-30）
+
+邮箱、验证码、用户名、Passkey、GitHub、Google 与管理员新登录统一签发短期 access JWT，并在 D1 建立可撤销的长期会话；refresh token 只存 hash，Cookie 为 HttpOnly/Secure。有效期取账号 `cookie_expiry_days` 与全局 refresh 上限较短者，管理员使用 `ADMIN_COOKIE_EXPIRY_DAYS`，续签不会延长原绝对到期时间。`/api/verify` 会核对新会话撤销状态和最新应用权限。
+
+原子应用回调的 `?token=...`、JWT UUID/role 和验证接口形状不变。按旧文档在 JWT 到期后跳回 `/login?app_id=...&redirect=...` 的子应用无需改登录代码，Auth Center Cookie 有效时会无提示续登并返回新 JWT。若子应用只显示错误、不跳回，或自设更短的本地 Cookie，则必须在该应用补回跳；身份中心不能跨站修改它的 Cookie。设备列表会保留每个会话访问过的 app ID。`/api/auth/session/continue` 只供身份中心同域页面调用。
 
 ## 测试身份登录
 
@@ -166,6 +193,9 @@ PUBLIC_BASE_URL = "https://accounts.example.com"
 JWT_ISSUER = "auth-center"
 EMAIL_FROM = "noreply@accounts.example.com"
 TURNSTILE_SITE_KEY = "0x..."
+# GOOGLE_OAUTH_CREDENTIALS Worker secret 的可选替代项：
+# GOOGLE_CLIENT_ID = "..."
+GOOGLE_BIRTHDAY_SCOPE_ENABLED = "false"
 REGISTRATION_MODE = "open"
 REGISTRATION_START_AT = ""
 REGISTRATION_END_AT = ""
@@ -190,6 +220,8 @@ JWT_SECRET
 TURNSTILE_SECRET_KEY
 PASSWORD_PEPPER
 GITHUB_CLIENT_SECRET
+GOOGLE_CLIENT_SECRET
+GOOGLE_OAUTH_CREDENTIALS（推荐，包含 ID 与 Secret 的单个 JSON secret，替代上面的分开配置）
 CF_API_TOKEN
 ```
 
@@ -212,7 +244,12 @@ npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
 npx wrangler d1 execute auth-center-db --remote --file=./migrate-test-identity-preview-2026-09-19.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-external-registration-2026-09-29.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-session-and-oauth-cleanup-2026-09-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-binding-details-2026-09-30.sql
 ```
+
+`schema.sql` 含有 `DROP TABLE`，只可用于全新可丢弃数据库。已有生产 D1 每个迁移只执行一次。清理旧绑定后不得重跑 2026-09-29 OAuth migration，否则旧 GitHub 对应关系会被重新写回。
 
 ## 头像编辑
 
@@ -252,6 +289,12 @@ npm install
 npm run build
 npx wrangler deploy
 ```
+
+### 在线文档同步
+
+`/dev/docs` 在 Vite 构建时自动收录 `Subapp-Docs子应用配置文档/` 目录下的**全部 Markdown 文件**；`/user/docs` 直接读取 `docs/user-guide.md`。仓库文件是唯一内容来源，新增、删除或修改文档后，**下一次构建并部署**即可同步网页，无需再手工维护一份页面内容。页面展示以台北时区计算的构建日期；每份文档另显示自身的“更新时间”，修订文档时也应更新该日期。仅修改本地文件不会自动改变线上 Worker。旧指南继续可查阅，但新子应用请优先使用注明日期的统一登录指南。
+
+`.github/workflows/publish-docs.yml` 会在文档源码推送到 `master` 时自动构建并部署。启用前须在 GitHub 仓库配置 `CLOUDFLARE_API_TOKEN`（具备此 Worker 的部署权限）和 `CLOUDFLARE_ACCOUNT_ID` 两个仓库密钥。其他分支上的修改或未推送的本地修改，仍需合并并推送到 `master`，或执行上面的手动部署命令。
 
 ## 常用验证
 

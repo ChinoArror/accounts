@@ -249,6 +249,7 @@ export default function RegisterCodeManager({
   const [defaultState, setDefaultState] = React.useState<Record<string, RegisterTemplateState>>({});
   const [defaultCookieExpiryDays, setDefaultCookieExpiryDays] = React.useState('7');
   const [externalRegistrationEnabled, setExternalRegistrationEnabled] = React.useState(true);
+  const [oauthThreshold, setOauthThreshold] = React.useState('3');
   const codesRef = React.useRef<RegisterCodeRecord[]>([]);
   useBodyScrollLock(Boolean(detailCode || inviteCode));
 
@@ -378,6 +379,7 @@ export default function RegisterCodeManager({
       const data = await res.json();
       if (!res.ok) return;
       setExternalRegistrationEnabled(data.external_registration_enabled !== false);
+      setOauthThreshold(String(data.oauth_turnstile_threshold_per_ip_hour ?? 3));
       setDefaultCookieExpiryDays(String(data.config?.cookie_expiry_days || 7));
       const permissions = Array.isArray(data.config?.permissions) ? data.config.permissions : [];
       setDefaultState((current) => {
@@ -410,6 +412,7 @@ export default function RegisterCodeManager({
         method: 'PUT',
         body: JSON.stringify({
           external_registration_enabled: externalRegistrationEnabled,
+          oauth_turnstile_threshold_per_ip_hour: Number(oauthThreshold),
           cookie_expiry_days: defaultCookieExpiryDays,
           permissions: buildPermissionsFromState(defaultState),
         }),
@@ -527,7 +530,7 @@ export default function RegisterCodeManager({
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-[var(--text-primary)]">Default Registration</h2>
-            <p className="mt-2 text-sm text-[var(--text-secondary)]">Applied once to new email registrations without a register code.</p>
+            <p className="mt-2 text-sm text-[var(--text-secondary)]">Applied once to new email, GitHub, and Google registrations without a register code.</p>
           </div>
           <label className="ui-card-subtle flex items-center gap-3 px-4 py-3 text-sm font-medium text-[var(--text-primary)]">
             <input
@@ -540,9 +543,9 @@ export default function RegisterCodeManager({
           </label>
         </div>
 
-        <div className="mb-5 max-w-xs space-y-2">
-          <label className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Cookie Expiry Days</label>
-          <input type="number" min="1" value={defaultCookieExpiryDays} onChange={(event) => setDefaultCookieExpiryDays(event.target.value)} />
+        <div className="mb-5 grid gap-4 sm:grid-cols-2">
+          <label className="block space-y-2"><span className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">Cookie Expiry Days</span><input type="number" min="1" value={defaultCookieExpiryDays} onChange={(event) => setDefaultCookieExpiryDays(event.target.value)} /></label>
+          <label className="block space-y-2"><span className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">OAuth sign-ups per IP / hour before Turnstile</span><input type="number" min="0" max="1000" step="1" value={oauthThreshold} onChange={(event) => setOauthThreshold(event.target.value)} /></label>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">

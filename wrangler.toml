@@ -18,8 +18,12 @@ ADMIN_USERNAME = "admin"
 JWT_SECRET = "1ee9f5ea-f5e0-42d1-b434-65df7efb42c4"
 CF_ACCOUNT_ID = "3903d3554a2e7453ce23f44bc989fe6b"
 GITHUB_CLIENT_ID = "Ov23liJvxA7wU7FRkMf7"
+# Recommended: set one JSON secret with `wrangler secret put GOOGLE_OAUTH_CREDENTIALS`
+# containing {"client_id":"...","client_secret":"..."}; it overrides the placeholder.
+# Alternatively set a real GOOGLE_CLIENT_ID and `wrangler secret put GOOGLE_CLIENT_SECRET`.
+# Enable this only after People API birthday scope is approved.
+GOOGLE_BIRTHDAY_SCOPE_ENABLED = "false"
 GITHUB_CLIENT_SECRET = "e4a2e1950bedb3be7b7d89474e5f216fef6dba6f"
-ADMIN_GITHUB_ID = "103983438"
 ADMIN_EMAIL = "yysy.rhy@gmail.com"
 ADMIN_COOKIE_EXPIRY_DAYS = "7"
 APP_NAME = "Auth Center"
@@ -30,7 +34,7 @@ TURNSTILE_SITE_KEY = "0x4AAAAAADYmJ_Cq7Uz4ybOg"
 REGISTRATION_MODE = "open"
 REGISTRATION_START_AT = ""
 REGISTRATION_END_AT = ""
-ALLOWED_EMAIL_DOMAINS = "gmail.com,outlook.com,qq.com,hotmail.com,live.com,msn.com,yahoo.com,icloud.com,me.com,proton.me,protonmail.com,163.com,126.com,yeah.net,foxmail.com"
+ALLOWED_EMAIL_DOMAINS = "aryuki.com,gmail.com,outlook.com,qq.com,hotmail.com,live.com,msn.com,yahoo.com,icloud.com,me.com,proton.me,protonmail.com,163.com,126.com,yeah.net,foxmail.com,112327.xyz,232799.xyz,andog.eu,yukies.top,stu.xjtu.edu.cn,xjtu.edu.cn"
 BLOCKED_EMAIL_DOMAINS = "tempmail.com,10minutemail.com,guerrillamail.com"
 MAX_GLOBAL_REGISTRATIONS_PER_DAY = "100"
 MAX_REGISTRATIONS_PER_IP_PER_HOUR = "3"

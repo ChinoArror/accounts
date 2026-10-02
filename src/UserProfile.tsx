@@ -3,11 +3,10 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeft,
-  Check,
-  Copy,
   Eye,
   EyeOff,
   Github,
+  Link2,
   ImagePlus,
   KeyRound,
   LogOut,
@@ -24,6 +23,7 @@ import { Link, Navigate, useParams } from 'react-router-dom';
 import DatePicker from './DatePicker';
 import { openRegisterCodeDetails, type RegisterCodeRecord } from './RegisterCodeManager';
 import { ThemeToggle, useThemeMode } from './theme';
+import { adminRequest } from './adminSessionClient';
 
 type UserRecord = {
   uuid: string;
@@ -61,9 +61,12 @@ type DetailPayload = {
   user: UserRecord;
   sessions: SessionRecord[];
   register_codes: RegisterCodeRecord[];
+  oauth_bindings: OAuthBinding[];
 };
 
-type ModalName = 'edit' | 'password' | null;
+type OAuthBinding = { provider: 'github' | 'google'; provider_subject: string; provider_email?: string | null; provider_username?: string | null; linked_at: string };
+
+type ModalName = 'edit' | 'password' | 'oauth' | null;
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -81,7 +84,7 @@ function formatDate(value?: string | null) {
 }
 
 function useBodyScrollLock() {
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const scrollY = window.scrollY;
     const previous = {
       bodyOverflow: document.body.style.overflow,
@@ -178,16 +181,14 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
   const [newPassword, setNewPassword] = React.useState('');
   const [showPasswordInput, setShowPasswordInput] = React.useState(false);
   const [showPlainPassword, setShowPlainPassword] = React.useState(false);
-  const [copied, setCopied] = React.useState('');
-  const isLogged = Boolean(localStorage.getItem('sso_admin_auth'));
+  const [isLogged, setIsLogged] = React.useState(true);
+  const [unlinkProvider, setUnlinkProvider] = React.useState<'github' | 'google' | null>(null);
 
   const adminFetch = React.useCallback(async (path: string, options: RequestInit = {}) => {
-    const headers = new Headers(options.headers);
-    headers.set('Authorization', localStorage.getItem('sso_admin_auth') || '');
-    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-    const response = await fetch(path, { ...options, headers, credentials: 'include' });
+    const response = await adminRequest(path, options);
     if (response.status === 401) {
       localStorage.removeItem('sso_admin_auth');
+      setIsLogged(false);
       window.location.replace('/login');
     }
     return response;
@@ -236,12 +237,37 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
     window.setTimeout(() => setMessage(null), 3200);
   };
 
-  const copyLink = async (kind: 'password' | 'github' | 'passkey') => {
-    if (!user) return;
-    const path = kind === 'password' ? 'change-password' : kind === 'github' ? 'sso-binding' : 'passkey';
-    await navigator.clipboard.writeText(`${window.location.origin}/${user.uuid}/${path}`);
-    setCopied(kind);
-    window.setTimeout(() => setCopied(''), 1800);
+  const beginOauthBinding = async (provider: 'github' | 'google') => {
+    if (!user || busy) return;
+    setBusy(true);
+    try {
+      const response = await adminFetch(`/admin/users/${encodeURIComponent(user.uuid)}/oauth-bind-token`, {
+        method: 'POST', body: JSON.stringify({ provider }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.authorize_url) throw new Error(data.error || 'Unable to start binding');
+      window.location.assign(data.authorize_url);
+    } catch (error: any) {
+      notify(error.message || 'Unable to start binding', 'danger');
+      setBusy(false);
+    }
+  };
+
+  const removeOauthBinding = async () => {
+    if (!user || !unlinkProvider || busy) return;
+    setBusy(true);
+    try {
+      const response = await adminFetch(`/admin/users/${encodeURIComponent(user.uuid)}/oauth-bindings/${unlinkProvider}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to remove account');
+      setUnlinkProvider(null);
+      await load();
+      notify('Account unlinked. The user email is unchanged.');
+    } catch (error: any) {
+      notify(error.message || 'Unable to remove account', 'danger');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const saveInfo = async (event: React.FormEvent) => {
@@ -460,16 +486,9 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
                 <button type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={() => setModal('password')}>
                   <KeyRound className="h-4 w-4" /> Overwrite password
                 </button>
-                {[
-                  { id: 'password' as const, label: 'Password link', icon: Copy },
-                  { id: 'github' as const, label: 'GitHub link', icon: Github },
-                  { id: 'passkey' as const, label: 'Passkey link', icon: KeyRound },
-                ].map((action) => (
-                  <button key={action.id} type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={() => copyLink(action.id)}>
-                    {copied === action.id ? <Check className="h-4 w-4 text-[var(--success)]" /> : <action.icon className="h-4 w-4" />}
-                    {action.label}
-                  </button>
-                ))}
+                <button type="button" className="ui-button-secondary inline-flex items-center justify-center gap-2" onClick={() => setModal('oauth')}>
+                  <Link2 className="h-4 w-4" /> Bind other account
+                </button>
               </div>
             </section>
 
@@ -552,7 +571,7 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
         </div>
       </main>
 
-      <AnimatePresence>
+      <AnimatePresence mode="wait">
         {modal === 'edit' ? (
           <AdminModal title="Edit information" onClose={() => setModal(null)}>
             <form onSubmit={saveInfo} className="space-y-5">
@@ -615,6 +634,42 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
               </div>
               <button className="ui-button-primary w-full" disabled={busy}>{busy ? 'Saving...' : 'Save password'}</button>
             </form>
+          </AdminModal>
+        ) : null}
+
+        {modal === 'oauth' && !unlinkProvider ? (
+          <AdminModal title="Bind other account" compact onClose={() => setModal(null)}>
+            <div className="grid gap-3">
+              {(['google', 'github'] as const).map((provider) => {
+                const linked = detail?.oauth_bindings?.find((item) => item.provider === provider);
+                return linked ? (
+                  <div key={provider} className="ui-card-subtle min-w-0 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-semibold">{provider === 'google' ? 'Google' : 'GitHub'}</p>
+                      <button type="button" className="ui-icon-button shrink-0 text-[var(--danger)]" onClick={() => setUnlinkProvider(provider)} aria-label={`Unlink ${provider}`} title={`Unlink ${provider}`}><Trash2 className="h-4 w-4" /></button>
+                    </div>
+                    <p className="mt-2 break-all text-sm text-[var(--text-secondary)]">{provider === 'google'
+                      ? linked.provider_email || (user?.email ? `Account email: ${user.email}` : 'Google email not recorded')
+                      : linked.provider_username ? `@${linked.provider_username}` : 'GitHub username not recorded'}</p>
+                    <p className="mt-2 break-all font-mono text-xs text-[var(--text-tertiary)]">Provider ID: {linked.provider_subject}</p>
+                    <p className="mt-1 text-xs text-[var(--text-tertiary)]">Linked: {formatDate(linked.linked_at)}</p>
+                  </div>
+                ) : (
+                  <button key={provider} type="button" className="ui-button-secondary flex items-center justify-center gap-2" disabled={busy} onClick={() => void beginOauthBinding(provider)}>
+                    {provider === 'github' ? <Github className="h-4 w-4" /> : <span className="font-bold">G</span>} Continue with {provider === 'github' ? 'GitHub' : 'Google'}
+                  </button>
+                );
+              })}
+            </div>
+          </AdminModal>
+        ) : null}
+        {modal === 'oauth' && unlinkProvider ? (
+          <AdminModal title={`Unlink ${unlinkProvider === 'google' ? 'Google' : 'GitHub'}?`} compact onClose={() => setUnlinkProvider(null)}>
+            <p className="mb-6 text-sm text-[var(--text-secondary)]">Remove this sign-in method for {user?.username}? The account email remains unchanged.</p>
+            <div className="flex gap-3">
+              <button type="button" className="ui-button-secondary flex-1" onClick={() => setUnlinkProvider(null)}>Cancel</button>
+              <button type="button" className="ui-button-danger flex-1" disabled={busy} onClick={() => void removeOauthBinding()}>{busy ? 'Removing...' : 'Unlink account'}</button>
+            </div>
           </AdminModal>
         ) : null}
       </AnimatePresence>

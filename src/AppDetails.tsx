@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { ArrowLeft, Save, Activity, Settings, User } from 'lucide-react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
+import { adminRequest } from './adminSessionClient';
 
 export default function AppDetails() {
     const { appId } = useParams<{ appId: string }>();
@@ -23,14 +24,10 @@ export default function AppDetails() {
     const [selectedUser, setSelectedUser] = useState<string>('all');
     const [loadingStats, setLoadingStats] = useState(false);
 
-    const API_BASE = '';
-    const authHeader = localStorage.getItem('sso_admin_auth') || '';
-
     const authFetch = async (path: string, options: any = {}) => {
-        return fetch(`${API_BASE}${path}`, {
-            ...options,
-            headers: { ...options.headers, 'Authorization': authHeader, 'Content-Type': 'application/json' }
-        });
+        const response = await adminRequest(path, options);
+        if (response.status === 401) navigate('/login', { replace: true });
+        return response;
     };
 
     const fetchData = async () => {
@@ -84,12 +81,8 @@ export default function AppDetails() {
     };
 
     useEffect(() => {
-        if (authHeader) {
-            fetchData();
-        } else {
-            navigate('/');
-        }
-    }, [appId, authHeader]);
+        void fetchData();
+    }, [appId]);
 
     useEffect(() => {
         if (appData?.use_agent_limit) {
@@ -157,11 +150,11 @@ export default function AppDetails() {
     const colors = ['#8b5cf6', '#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4'];
 
     return (
-        <div className="min-h-screen bg-[#0B0F19] text-white p-4 md:p-8 lg:p-12 overflow-y-auto w-full relative">
+        <div className="app-details-page min-h-screen bg-[#0B0F19] text-white p-4 md:p-8 lg:p-12 overflow-y-auto w-full relative">
             <div className="absolute top-0 left-[-10%] w-[40%] h-[40%] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none" />
 
             <div className="max-w-6xl mx-auto relative z-10 space-y-8">
-                <button onClick={() => navigate('/')} className="flex items-center gap-2 text-purple-300 hover:text-white transition-colors">
+                <button onClick={() => navigate('/dash')} className="flex items-center gap-2 text-purple-300 hover:text-white transition-colors">
                     <ArrowLeft className="w-5 h-5" /> Back to Dashboard
                 </button>
 

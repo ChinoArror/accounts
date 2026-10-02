@@ -9,6 +9,7 @@ export default defineConfig(({mode}) => {
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      __DOCS_BUILD_DATE__: JSON.stringify(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })),
     },
     resolve: {
       alias: {

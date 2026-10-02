@@ -5,6 +5,9 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from '@simplewebauthn/server';
 import { cleanupExpiredPendingRegistrations, registerEmailAuthFeature, releaseExpiredRegisterInvites } from './emailAuthFeature';
 import { buildPreviewUrl, expandPreviewApps, normalizePreviewEnabled, previewSessionExpiresAt } from './testPreview';
+import { cleanupOAuthFlow, registerOAuthFlow, isAllowedOAuthRedirect } from './oauthFlow';
+import { clearSessionCookies, durableSessionActive, findRefreshSession, issueDurableSession, recordSessionApp, refreshSeconds, revokeDurableSession, rotateRefreshSession, setAccessCookie, accessSeconds } from './durableSession';
+import { buildRegistrationSeries, parseRegistrationRange } from './registrationStats';
 
 type D1Database = any;
 type AnalyticsEngineDataset = any;
@@ -36,7 +39,10 @@ type Bindings = {
   CF_API_TOKEN: string;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
-  ADMIN_GITHUB_ID: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_OAUTH_CREDENTIALS?: string;
+  GOOGLE_BIRTHDAY_SCOPE_ENABLED?: string;
   ADMIN_EMAIL?: string;
   APP_NAME?: string;
   PUBLIC_BASE_URL?: string;
@@ -841,9 +847,7 @@ async function getActiveTestSecret(c: any, id: string) {
 }
 
 async function revokeSession(c: any, sessionId: string) {
-  await c.env.DB.prepare(
-    'UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE session_id = ? AND revoked_at IS NULL'
-  ).bind(sessionId).run();
+  await revokeDurableSession(c, sessionId);
 }
 
 async function authenticateCookieSession(c: any, allowAdmin = false) {
@@ -852,6 +856,8 @@ async function authenticateCookieSession(c: any, allowAdmin = false) {
 
   try {
     const payload = await verifyJWT(token, c.env.JWT_SECRET);
+
+    if (!await durableSessionActive(c, payload)) return null;
 
     if (payload.uuid === 'admin') {
       return allowAdmin ? { token, payload, session: null } : null;
@@ -938,19 +944,7 @@ app.post('/login', async (c) => {
     userToAuth = user;
   }
 
-  const payload = buildTokenPayload(c, userToAuth);
-
-  let tokenPayload: any = payload;
-  if (userToAuth.uuid !== 'admin') {
-    const sessionId = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + userToAuth.cookie_expiry_days * 86400 * 1000).toISOString();
-    await persistUserSession(c, userToAuth, sessionId, expiresAt, app_id || 'auth-center');
-    tokenPayload = buildTokenPayload(c, userToAuth, sessionId);
-  }
-
-  const token = await generateJWT(tokenPayload, c.env.JWT_SECRET, userToAuth.cookie_expiry_days);
-
-  setUserSessionCookie(c, token, userToAuth.cookie_expiry_days * 86400);
+  const { token } = await issueDurableSession(c, userToAuth, buildTokenPayload(c, userToAuth), app_id || 'auth-center');
 
   return c.json({
     token: token,
@@ -989,17 +983,7 @@ app.post('/api/users/login', async (c) => {
   const isValid = await verifyPassword(password, user.password_salt, user.password_hash);
   if (!isValid) return c.json({ error: 'Invalid credentials' }, 401);
 
-  const sessionId = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + user.cookie_expiry_days * 86400 * 1000).toISOString();
-  await persistUserSession(c, user, sessionId, expiresAt, 'user-portal');
-
-  const token = await generateJWT(
-    buildTokenPayload(c, user, sessionId) as any,
-    c.env.JWT_SECRET,
-    user.cookie_expiry_days
-  );
-
-  setUserSessionCookie(c, token, user.cookie_expiry_days * 86400);
+  await issueDurableSession(c, user, buildTokenPayload(c, user), 'auth-center');
 
   return c.json({
     success: true,
@@ -1117,21 +1101,19 @@ app.post('/api/register', async (c) => {
 // Logout
 app.post('/api/logout', async (c) => {
   const activeSession = await authenticateCookieSession(c, true);
-  if (activeSession?.payload?.session_id) {
-    await revokeSession(c, activeSession.payload.session_id);
-  }
-  setCookie(c, 'sso_session', '', { path: '/', maxAge: 0, secure: true, httpOnly: true, sameSite: 'Lax' });
-  setCookie(c, 'auth_refresh', '', { path: '/', maxAge: 0, secure: true, httpOnly: true, sameSite: 'Lax' });
+  const refresh = await findRefreshSession(c);
+  if (activeSession?.payload?.session_id) await revokeSession(c, activeSession.payload.session_id);
+  if (refresh) await revokeSession(c, refresh.row.id);
+  clearSessionCookies(c);
   return c.json({ success: true });
 });
 
 app.get('/logout', async (c) => {
   const activeSession = await authenticateCookieSession(c, true);
-  if (activeSession?.payload?.session_id) {
-    await revokeSession(c, activeSession.payload.session_id);
-  }
-  setCookie(c, 'sso_session', '', { path: '/', maxAge: 0, secure: true, httpOnly: true, sameSite: 'Lax' });
-  setCookie(c, 'auth_refresh', '', { path: '/', maxAge: 0, secure: true, httpOnly: true, sameSite: 'Lax' });
+  const refresh = await findRefreshSession(c);
+  if (activeSession?.payload?.session_id) await revokeSession(c, activeSession.payload.session_id);
+  if (refresh) await revokeSession(c, refresh.row.id);
+  clearSessionCookies(c);
   const redirect = c.req.query('redirect');
   if (redirect) return c.redirect(redirect);
   return c.json({ success: true, message: 'Logged out successfully' });
@@ -1142,6 +1124,74 @@ app.get('/api/session', async (c) => {
   const activeSession = await authenticateCookieSession(c, true);
   if (!activeSession) return c.json({ active: false }, 401);
   return c.json({ active: true, user: activeSession.payload, token: activeSession.token });
+});
+
+app.post('/api/auth/session/continue', async (c) => {
+  const origin = c.req.header('Origin');
+  if (origin && origin !== new URL(c.req.url).origin) return c.json({ ok: false, error: 'Invalid origin' }, 403);
+  const body: any = await c.req.json().catch(() => ({}));
+  const appId = String(body.app_id || '').trim();
+  const redirect = String(body.redirect_uri || body.redirect || '').trim();
+  if (!!appId !== !!redirect) return c.json({ ok: false, error: 'Application and callback are required together' }, 400);
+  if (appId) {
+    const app: any = await c.env.DB.prepare('SELECT callback_url, status FROM apps WHERE app_id = ?').bind(appId).first();
+    if (!app || app.status !== 'active' || !isAllowedOAuthRedirect(app.callback_url, redirect)) return c.json({ ok: false, error: 'Invalid callback' }, 400);
+  }
+  const found = await findRefreshSession(c);
+  if (!found) {
+    const legacy = await authenticateCookieSession(c, true);
+    if (!legacy || legacy.payload.session_kind === 'durable' || (!legacy.user && legacy.payload.uuid !== 'admin')) {
+      clearSessionCookies(c);
+      return c.json({ ok: false, error: 'Session expired' }, 401);
+    }
+    const previousUser = legacy.user || { uuid: 'admin', user_id: '0', username: c.env.ADMIN_USERNAME || 'admin', name: 'Admin', email: c.env.ADMIN_EMAIL || null,
+      email_verified: !!c.env.ADMIN_EMAIL, role: 'admin', status: 'active', auth_provider: 'sso', cookie_expiry_days: getAdminCookieExpiryDays(c) };
+    if (previousUser.status !== 'active') return c.json({ ok: false, error: 'Session expired' }, 401);
+    if (appId && previousUser.uuid !== 'admin') {
+      const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(previousUser.uuid, appId).first();
+      if (!permission) return c.json({ ok: false, error: 'No permission for this application' }, 403);
+    }
+    const upgraded = await issueDurableSession(c, previousUser, buildTokenPayload(c, previousUser), appId || 'auth-center');
+    if (appId) {
+      const callback = new URL(redirect);
+      callback.searchParams.set('token', upgraded.token);
+      c.header('Cache-Control', 'no-store');
+      return c.json({ ok: true, token: upgraded.token, redirect_to: callback.toString(), user: buildTokenPayload(c, previousUser, upgraded.sessionId) });
+    }
+    c.header('Cache-Control', 'no-store');
+    return c.json({ ok: true, token: upgraded.token, user: buildTokenPayload(c, previousUser, upgraded.sessionId), redirect_to: previousUser.role === 'admin' ? '/dash' : `/user/${encodeURIComponent(previousUser.uuid)}` });
+  }
+  let user: any;
+  if (found.admin) {
+    user = { uuid: 'admin', user_id: '0', username: c.env.ADMIN_USERNAME || 'admin', name: 'Admin', email: c.env.ADMIN_EMAIL || null,
+      email_verified: !!c.env.ADMIN_EMAIL, role: 'admin', status: 'active', auth_provider: 'sso' };
+  } else {
+    user = await c.env.DB.prepare('SELECT * FROM users WHERE uuid = ?').bind(found.row.user_id).first();
+    if (!user || user.status !== 'active') { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired' }, 401); }
+    if (Date.parse(found.row.created_at) + refreshSeconds(c, user.cookie_expiry_days) * 1000 <= Date.now()) {
+      await revokeSession(c, found.row.id);
+      clearSessionCookies(c);
+      return c.json({ ok: false, error: 'Session expired' }, 401);
+    }
+    const device: any = await c.env.DB.prepare('SELECT revoked_at FROM user_sessions WHERE session_id = ?').bind(found.row.id).first();
+    if (!device || device.revoked_at) { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired' }, 401); }
+    if (appId) {
+      const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(user.uuid, appId).first();
+      if (!permission) return c.json({ ok: false, error: 'No permission for this application' }, 403);
+    }
+  }
+  await rotateRefreshSession(c, found);
+  const token = await generateJWT({ ...buildTokenPayload(c, user, found.row.id), session_kind: 'durable' }, c.env.JWT_SECRET, accessSeconds(c) / 86400);
+  setAccessCookie(c, token);
+  await recordSessionApp(c, found.row.id, user.uuid, appId || 'auth-center');
+  if (appId) {
+    const callback = new URL(redirect);
+    callback.searchParams.set('token', token);
+    c.header('Cache-Control', 'no-store');
+    return c.json({ ok: true, token, redirect_to: callback.toString(), user: buildTokenPayload(c, user, found.row.id) });
+  }
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, token, user: buildTokenPayload(c, user, found.row.id), redirect_to: user.role === 'admin' ? '/dash' : `/user/${encodeURIComponent(user.uuid)}` });
 });
 
 app.post('/preview/api/session', async (c) => {
@@ -1532,6 +1582,38 @@ app.post('/api/user/bind-token', async (c) => {
   return c.json({ success: true, bind_token: bindToken, uuid: activeSession.user.uuid });
 });
 
+const oauthProvider = (value: string) => value === 'github' || value === 'google';
+
+async function oauthBindingsFor(c: any, uuid: string) {
+  const { results } = await c.env.DB.prepare(`
+    SELECT provider, provider_subject, provider_email, provider_username, linked_at, last_login_at
+    FROM oauth_identities WHERE user_uuid = ? ORDER BY provider
+  `).bind(uuid).all();
+  return results || [];
+}
+
+app.get('/api/account/oauth-bindings', async (c) => {
+  const active = await authenticateCookieSession(c);
+  if (!active || active.user.status !== 'active') return c.json({ error: 'Authentication required' }, 401);
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, bindings: await oauthBindingsFor(c, active.user.uuid), account_email: active.user.email || null });
+});
+
+app.delete('/api/account/oauth-bindings/:provider', async (c) => {
+  const active = await authenticateCookieSession(c);
+  if (!active || active.user.status !== 'active') return c.json({ error: 'Authentication required' }, 401);
+  const provider = c.req.param('provider');
+  if (!oauthProvider(provider)) return c.json({ error: 'Unsupported provider' }, 400);
+  const origin = c.req.header('Origin');
+  if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: 'Invalid origin' }, 403);
+  const result = await c.env.DB.prepare('DELETE FROM oauth_identities WHERE user_uuid = ? AND provider = ?').bind(active.user.uuid, provider).run();
+  if (!result.meta?.changes) return c.json({ error: 'Binding not found' }, 404);
+  if (provider === 'github') await c.env.DB.prepare('UPDATE users SET github_id = NULL WHERE uuid = ?').bind(active.user.uuid).run();
+  await c.env.DB.prepare(`INSERT INTO auth_audit_logs (id, user_id, event_type, success, detail, created_at)
+    VALUES (?, ?, 'oauth_unlink', 1, ?, ?)`).bind(crypto.randomUUID(), active.user.uuid, JSON.stringify({ provider }), new Date().toISOString()).run();
+  return c.json({ ok: true });
+});
+
 app.post('/api/user/change-password', async (c) => {
   const activeSession = await authenticateCookieSession(c);
   if (!activeSession) return c.json({ error: 'Authentication required' }, 401);
@@ -1663,7 +1745,8 @@ app.get('/api/user/sessions', async (c) => {
   if (!activeSession) return c.json({ error: 'Authentication required' }, 401);
 
   const { results } = await c.env.DB.prepare(`
-    SELECT session_id, login_at, ip_address, browser, device_type, app_id, expires_at, revoked_at
+    SELECT session_id, login_at, ip_address, browser, device_type, app_id, expires_at, revoked_at,
+      (SELECT GROUP_CONCAT(DISTINCT activity.app_id) FROM session_app_activity activity WHERE activity.session_id = user_sessions.session_id) AS app_ids
     FROM user_sessions
     WHERE uuid = ?
     ORDER BY login_at DESC
@@ -1706,6 +1789,12 @@ app.get('/api/verify', async (c) => {
 
   try {
     const payload = await verifyJWT(token, c.env.JWT_SECRET);
+
+    if (!await durableSessionActive(c, payload)) return c.json({ error: 'Session revoked or expired' }, 401);
+    if (payload.session_kind !== 'durable' && payload.identity_type !== 'test' && !payload.test_session && payload.session_id && payload.uuid !== 'admin') {
+      const prior: any = await c.env.DB.prepare('SELECT revoked_at, expires_at FROM user_sessions WHERE session_id = ?').bind(payload.session_id).first();
+      if (prior && (prior.revoked_at || Date.parse(prior.expires_at) <= Date.now())) return c.json({ error: 'Session revoked or expired' }, 401);
+    }
 
     if (payload.uuid === 'admin') {
       return c.json({ valid: true, user: payload });
@@ -1969,188 +2058,37 @@ app.post('/api/users/:uuid/verify-password', async (c) => {
   return c.json({ success: true, bind_token: token });
 });
 
-// GitHub Login
-app.get('/api/github/login', async (c) => {
-  const admin_uuid = c.req.query('admin_bind');
-  const bind_token = c.req.query('bind_token');
-  const app_redirect = c.req.query('app_redirect');
-  const app_id = c.req.query('app_id');
-
-  let statePayload: any = { action: 'login' };
-
-  if (app_redirect && app_id) {
-    statePayload = { action: 'sso_login', app_redirect, app_id };
-  }
-
-  if (admin_uuid === 'admin') {
-    statePayload = { action: 'bind', uuid: 'admin' };
-  } else if (bind_token) {
-    try {
-      const payload = await verifyJWT(bind_token, c.env.JWT_SECRET);
-      if (payload.action === 'bind') {
-        statePayload = { action: 'bind', uuid: payload.uuid };
-      }
-    } catch (e) {
-      return c.text('Invalid bind token', 400);
+registerOAuthFlow(app, {
+  currentSession: (c) => authenticateCookieSession(c, true),
+  finishLogin: async (c, user, target, provider, asJson = false) => {
+    const appId = target.app_id || 'auth-center';
+    if (target.app_id && user.uuid !== 'admin') {
+      const permission = await c.env.DB.prepare(`
+        SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1
+      `).bind(user.uuid, target.app_id).first();
+      if (!permission) return asJson
+        ? c.json({ ok: false, message: 'No permission for this application.' }, 403)
+        : c.redirect('/login?error=no_permission');
     }
-  }
-
-  const state = await generateJWT(statePayload, c.env.JWT_SECRET, 1);
-  const redirect_uri = `${new URL(c.req.url).origin}/api/github/callback`;
-
-  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${c.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirect_uri)}&state=${state}`;
-  return c.redirect(githubUrl);
+    if (user.uuid !== 'admin') {
+      await c.env.DB.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE uuid = ?')
+        .bind(new Date().toISOString(), new Date().toISOString(), user.uuid).run();
+    }
+    const { token } = await issueDurableSession(c, user, buildTokenPayload(c, { ...user, auth_provider: provider }), appId);
+    if (target.app_redirect) {
+      const callback = new URL(target.app_redirect);
+      callback.searchParams.set('token', token);
+      return asJson ? c.json({ ok: true, token, redirect_to: callback.toString() }) : c.redirect(callback.toString());
+    }
+    const path = user.role === 'admin' ? '/dash' : `/user/${encodeURIComponent(user.uuid)}`;
+    if (asJson) return c.json({ ok: true, token, redirect_to: path });
+    if (user.role === 'admin') {
+      return c.html(`<html><body><script>localStorage.setItem('sso_admin_auth', ${JSON.stringify(`Bearer ${token}`)}); location.replace('/dash');</script></body></html>`);
+    }
+    return c.redirect(path);
+  },
 });
 
-// GitHub Callback
-app.get('/api/github/callback', async (c) => {
-  const code = c.req.query('code');
-  const state = c.req.query('state');
-
-  if (!code || !state) return c.text('Missing code or state', 400);
-
-  let statePayload: any;
-  try {
-    statePayload = await verifyJWT(state, c.env.JWT_SECRET);
-  } catch (e) {
-    return c.text('Invalid state', 400);
-  }
-
-  const redirect_uri = `${new URL(c.req.url).origin}/api/github/callback`;
-
-  const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: c.env.GITHUB_CLIENT_ID,
-      client_secret: c.env.GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri
-    })
-  });
-
-  const tokenData: any = await tokenResponse.json();
-  if (tokenData.error) return c.text(`GitHub Error: ${tokenData.error_description}`, 400);
-
-  const userResponse = await fetch('https://api.github.com/user', {
-    headers: {
-      'Authorization': `Bearer ${tokenData.access_token}`,
-      'User-Agent': 'cloudflare-worker'
-    }
-  });
-
-  const userData: any = await userResponse.json();
-  const githubId = userData.id.toString();
-
-  if (statePayload.action === 'bind') {
-    if (statePayload.uuid === 'admin') {
-      return c.html(`
-        <html><body style="background:#0B0F19;color:white;font-family:sans-serif;padding:40px;text-align:center;">
-          <h2>Admin GitHub Bound Locally</h2>
-          <p>Your GitHub ID is <strong style="color:#4ade80;font-size:24px;">${githubId}</strong>.</p>
-          <p>Please add <code>ADMIN_GITHUB_ID = "${githubId}"</code> to your <code>wrangler.toml</code> or Cloudflare environment variables.</p>
-          <button onclick="window.close()" style="margin-top:20px;padding:10px 20px;background:#9333ea;color:white;border:none;border-radius:10px;cursor:pointer;">Close</button>
-        </body></html>
-      `);
-    } else {
-      await c.env.DB.prepare('UPDATE users SET github_id = ? WHERE uuid = ?').bind(githubId, statePayload.uuid).run();
-      return c.html(`
-        <html><body style="background:#0B0F19;color:white;font-family:sans-serif;padding:40px;text-align:center;">
-          <h2 style="color:#4ade80;">GitHub Bound Successfully</h2>
-          <p>You can now use GitHub to log in.</p>
-          <button onclick="window.close()" style="margin-top:20px;padding:10px 20px;background:#9333ea;color:white;border:none;border-radius:10px;cursor:pointer;">Close Window</button>
-        </body></html>
-      `);
-    }
-  } else if (statePayload.action === 'login' || statePayload.action === 'sso_login') {
-    let userToAuth: any = null;
-
-    if (githubId === c.env.ADMIN_GITHUB_ID) {
-      userToAuth = {
-        uuid: 'admin',
-        user_id: "0",
-        name: 'Admin',
-        username: c.env.ADMIN_USERNAME,
-        role: 'admin',
-        email: c.env.ADMIN_EMAIL || null,
-        email_verified: !!c.env.ADMIN_EMAIL,
-        auth_provider: 'sso',
-        status: 'active',
-        cookie_expiry_days: getAdminCookieExpiryDays(c)
-      };
-    } else {
-      const user: any = await c.env.DB.prepare('SELECT * FROM users WHERE github_id = ?').bind(githubId).first();
-      if (!user) {
-        return c.redirect('/?error=github_not_bound');
-      }
-      if (user.status === 'paused') return c.redirect('/?error=account_paused');
-      userToAuth = user;
-    }
-
-    const payload = buildTokenPayload(c, userToAuth);
-    let tokenPayload: any = payload;
-    if (userToAuth.uuid !== 'admin') {
-      const sessionId = crypto.randomUUID();
-      const expiresAt = new Date(Date.now() + userToAuth.cookie_expiry_days * 86400 * 1000).toISOString();
-      await persistUserSession(
-        c,
-        userToAuth,
-        sessionId,
-        expiresAt,
-        statePayload.action === 'sso_login' ? statePayload.app_id : 'auth-center'
-      );
-      tokenPayload = buildTokenPayload(c, userToAuth, sessionId);
-    }
-
-    const jwtToken = await generateJWT(tokenPayload, c.env.JWT_SECRET, userToAuth.cookie_expiry_days);
-
-    if (statePayload.action === 'sso_login') {
-      const appId = statePayload.app_id;
-      const redirect = statePayload.app_redirect;
-
-      if (userToAuth.uuid !== 'admin') {
-        const permission = await c.env.DB.prepare('SELECT * FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(userToAuth.uuid, appId).first();
-        if (!permission) {
-          return c.redirect('/?error=no_permission');
-        }
-      }
-
-      await fetch(`${new URL(c.req.url).origin}/api/track`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: appId, uuid: userToAuth.uuid, event_type: 'login_success', duration_seconds: 0 })
-      }).catch(() => { });
-
-      setUserSessionCookie(c, jwtToken, userToAuth.cookie_expiry_days * 86400);
-
-      return c.html(`
-        <html><body>
-          <script>
-            window.location.href = '${redirect}${redirect.includes('?') ? '&' : '?'}token=${jwtToken}';
-          </script>
-        </body></html>
-      `);
-    }
-
-    setUserSessionCookie(c, jwtToken, userToAuth.cookie_expiry_days * 86400);
-
-    const isAdmin = userToAuth.uuid === 'admin' || userToAuth.role === 'admin';
-    const targetPath = isAdmin ? '/dash' : `/user/${userToAuth.uuid}`;
-    const adminStorage = isAdmin
-      ? `localStorage.setItem('sso_admin_auth', 'Bearer ${jwtToken}'); localStorage.setItem('sso_admin_name', ${JSON.stringify(userToAuth.name || 'Admin')});`
-      : `localStorage.removeItem('sso_admin_auth');`;
-    return c.html(`
-      <html><body>
-        <script>
-          ${adminStorage}
-          window.location.href = '${targetPath}';
-        </script>
-      </body></html>
-    `);
-  }
-
-  return c.text('Unknown action', 400);
-});
 
 // --- Passkeys API (WebAuthn) ---
 
@@ -2408,23 +2346,12 @@ app.post('/api/passkey/verify-authentication', async (c) => {
         }
       }
 
-      const payload = buildTokenPayload(c, userToAuth);
-      let tokenPayload: any = payload;
-      if (userToAuth.uuid !== 'admin') {
-        const sessionId = crypto.randomUUID();
-        const expiresAt = new Date(Date.now() + userToAuth.cookie_expiry_days * 86400 * 1000).toISOString();
-        await persistUserSession(c, userToAuth, sessionId, expiresAt, appId || 'auth-center');
-        tokenPayload = buildTokenPayload(c, userToAuth, sessionId);
-      }
-
-      const jwtToken = await generateJWT(tokenPayload, c.env.JWT_SECRET, userToAuth.cookie_expiry_days);
+      const { token: jwtToken } = await issueDurableSession(c, userToAuth, buildTokenPayload(c, userToAuth), appId || 'auth-center');
 
       if (appId && appRedirect) {
         setCookie(c, 'passkey_login_challenge', '', { maxAge: 0, path: '/' });
-        setUserSessionCookie(c, jwtToken, userToAuth.cookie_expiry_days * 86400);
         return c.json({ verified: true, token: jwtToken });
       } else {
-        setUserSessionCookie(c, jwtToken, userToAuth.cookie_expiry_days * 86400);
         setCookie(c, 'passkey_login_challenge', '', { maxAge: 0, path: '/' });
         return c.json({ verified: true, token: jwtToken });
       }
@@ -2445,7 +2372,7 @@ async function adminAuthGuard(c: any, next: any) {
     try {
       const token = authHeader.split(' ')[1];
       const payload = await verifyJWT(token, c.env.JWT_SECRET);
-      if (payload.role === 'admin' && payload.identity_type !== 'test' && payload.test_session !== true) {
+      if (payload.role === 'admin' && payload.identity_type !== 'test' && payload.test_session !== true && await durableSessionActive(c, payload)) {
         return next();
       }
     } catch (e) { }
@@ -2469,6 +2396,34 @@ async function adminAuthGuard(c: any, next: any) {
 // Apply admin auth to all admin routes. New code must use role=admin for JWTs.
 app.use('/admin/*', adminAuthGuard);
 app.use('/api/admin/*', adminAuthGuard);
+
+app.get('/admin/stats/external-registrations', async (c) => {
+  const granularity = c.req.query('granularity') || 'day';
+  const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  const from = c.req.query('from') || new Date(Date.now() - (granularity === 'month' ? 365 : 29) * 86400000 + 8 * 3600000).toISOString().slice(0, 10);
+  const to = c.req.query('to') || today;
+  const range = parseRegistrationRange(granularity, from, to);
+  if (!range) return c.json({ ok: false, message: 'Invalid date range.' }, 400);
+  const bucketSql = granularity === 'month' ? "strftime('%Y-%m', datetime(created_at, '+8 hours'))" : "strftime('%Y-%m-%d', datetime(created_at, '+8 hours'))";
+  const [summary, rows, pending, latest]: any = await Promise.all([
+    c.env.DB.prepare('SELECT COUNT(*) AS total, MIN(created_at) AS coverage_start FROM registration_events').first(),
+    c.env.DB.prepare(`SELECT ${bucketSql} AS bucket, channel, COUNT(*) AS total FROM registration_events
+      WHERE date(datetime(created_at, '+8 hours')) BETWEEN ? AND ? GROUP BY bucket, channel ORDER BY bucket`)
+      .bind(from, to).all(),
+    c.env.DB.prepare("SELECT COUNT(*) AS total FROM registration_events e JOIN users u ON u.uuid = e.user_uuid WHERE u.status = 'pending'").first(),
+    c.env.DB.prepare('SELECT created_at FROM registration_events ORDER BY created_at DESC LIMIT 1').first(),
+  ]);
+  const series = buildRegistrationSeries(rows.results || [], range);
+  const byChannel = { email: 0, github: 0, google: 0 };
+  for (const entry of series) {
+    byChannel.email += entry.email;
+    byChannel.github += entry.github;
+    byChannel.google += entry.google;
+  }
+  return c.json({ ok: true, lifetime_total: Number(summary?.total || 0), total: Object.values(byChannel).reduce((a, b) => a + b, 0),
+    by_channel: byChannel, series, pending: Number(pending?.total || 0), latest_at: latest?.created_at || null,
+    coverage_start: summary?.coverage_start || null, granularity, from, to, timezone: 'Asia/Taipei' });
+});
 
 app.post('/admin/bind-token', async (c) => {
   const bindToken = await generateJWT({ action: 'bind', uuid: 'admin' }, c.env.JWT_SECRET, 1 / 24);
@@ -2951,10 +2906,50 @@ app.put('/admin/users/:uuid/password', async (c) => {
   return c.json({ success: true });
 });
 
+app.post('/admin/users/:uuid/oauth-bind-token', async (c) => {
+  const uuid = c.req.param('uuid');
+  const body: any = await c.req.json().catch(() => ({}));
+  const provider = String(body.provider || '');
+  if (provider !== 'github' && provider !== 'google') return c.json({ error: 'Unsupported provider' }, 400);
+  const user: any = await c.env.DB.prepare("SELECT uuid, status FROM users WHERE uuid = ?").bind(uuid).first();
+  if (!user) return c.json({ error: 'User not found' }, 404);
+  if (user.status !== 'active') return c.json({ error: 'Account is not active' }, 403);
+  const linked = await c.env.DB.prepare('SELECT 1 FROM oauth_identities WHERE provider = ? AND user_uuid = ?').bind(provider, uuid).first();
+  if (linked) return c.json({ error: 'This provider is already linked' }, 409);
+  const proof = await generateJWT({ action: 'bind', uuid, provider }, c.env.JWT_SECRET, 5 / 1440);
+  await c.env.DB.prepare(`INSERT INTO auth_audit_logs (id, user_id, event_type, success, detail, created_at)
+    VALUES (?, ?, 'admin_oauth_bind_started', 1, ?, ?)`)
+    .bind(crypto.randomUUID(), uuid, JSON.stringify({ provider }), new Date().toISOString()).run();
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, authorize_url: `/api/${provider}/login?bind_token=${encodeURIComponent(proof)}` });
+});
+
+app.get('/admin/users/:uuid/oauth-bindings', async (c) => {
+  const uuid = c.req.param('uuid');
+  const user: any = await c.env.DB.prepare('SELECT uuid, email FROM users WHERE uuid = ?').bind(uuid).first();
+  if (!user) return c.json({ error: 'User not found' }, 404);
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, bindings: await oauthBindingsFor(c, uuid), account_email: user.email || null });
+});
+
+app.delete('/admin/users/:uuid/oauth-bindings/:provider', async (c) => {
+  const uuid = c.req.param('uuid');
+  const provider = c.req.param('provider');
+  if (!oauthProvider(provider)) return c.json({ error: 'Unsupported provider' }, 400);
+  const result = await c.env.DB.prepare('DELETE FROM oauth_identities WHERE user_uuid = ? AND provider = ?').bind(uuid, provider).run();
+  if (!result.meta?.changes) return c.json({ error: 'Binding not found' }, 404);
+  if (provider === 'github') await c.env.DB.prepare('UPDATE users SET github_id = NULL WHERE uuid = ?').bind(uuid).run();
+  await c.env.DB.prepare(`INSERT INTO auth_audit_logs (id, user_id, event_type, success, detail, created_at)
+    VALUES (?, ?, 'admin_oauth_unlink', 1, ?, ?)`).bind(crypto.randomUUID(), uuid, JSON.stringify({ provider, actor: 'admin' }), new Date().toISOString()).run();
+  return c.json({ ok: true });
+});
+
 app.delete('/admin/users/:uuid', async (c) => {
   const uuid = c.req.param('uuid');
   const user: any = await c.env.DB.prepare('SELECT avatar_key FROM users WHERE uuid = ?').bind(uuid).first();
   await deleteAvatarIfPresent(c, user?.avatar_key);
+  await c.env.DB.prepare('DELETE FROM oauth_identities WHERE user_uuid = ?').bind(uuid).run();
+  await c.env.DB.prepare('DELETE FROM session_app_activity WHERE user_id = ?').bind(uuid).run();
   await c.env.DB.prepare('DELETE FROM user_apps WHERE uuid = ?').bind(uuid).run().catch(() => null);
   await c.env.DB.prepare('DELETE FROM user_sessions WHERE uuid = ?').bind(uuid).run().catch(() => null);
   await c.env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(uuid).run().catch(() => null);
@@ -3584,5 +3579,6 @@ export default {
     await cleanupExpiredAvatarDeletes(env);
     await cleanupExpiredPendingRegistrations(env);
     await releaseExpiredRegisterInvites(env);
+    await cleanupOAuthFlow(env);
   },
 };

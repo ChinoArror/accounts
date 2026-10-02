@@ -1,5 +1,7 @@
 # SSO & Analytics System (Cloudflare Workers)
 
+> 更新时间：2026-09-30。本文含历史示例，正在逐步更新；新应用请先读[统一登录与静默续期接入指南](统一登录与静默续期-2026-09-30.md)。原回调 `?token=...` 与 `/api/verify?app_id=...` 保持兼容。JWT 到期后必须重新跳到 Auth Center，才能利用其有效 Cookie 静默续登；身份中心不能更新子应用自己的 Cookie。
+
 This is a unified Single Sign-On (SSO) and Analytics system built on Cloudflare Workers, D1, and Workers Analytics Engine. It provides centralized authentication and usage tracking for multiple web applications.
 
 ## Prerequisites

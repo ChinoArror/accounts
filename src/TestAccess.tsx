@@ -1,4 +1,5 @@
 import React from 'react';
+import { adminRequest } from './adminSessionClient';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -16,9 +17,9 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
+import { ThemeToggle, useThemeMode } from './theme';
 import DatePicker from './DatePicker';
-import testIdentityDocsMarkdown from '../Subapp-Docs子应用配置文档/测试身份适配指南.md?raw';
 
 const API_BASE = '';
 
@@ -665,7 +666,7 @@ export function TestAccess({ authFetch, apps }: { authFetch: AuthFetch; apps: an
           </div>
           <div className="flex shrink-0 items-center gap-2 md:gap-3">
             {refreshing ? <span className="text-xs text-[var(--text-tertiary)]">Refreshing...</span> : null}
-            <Link to="/dev/docs" className="ui-button-secondary whitespace-nowrap">Docs View</Link>
+            <Link to="/dev/docs?doc=%E6%B5%8B%E8%AF%95%E8%BA%AB%E4%BB%BD%E9%80%82%E9%85%8D%E6%8C%87%E5%8D%97.md" className="ui-button-secondary whitespace-nowrap">Docs View</Link>
           </div>
         </div>
       </header>
@@ -884,93 +885,9 @@ function ActivityBlock({ title, empty, children }: { title: string; empty: strin
   );
 }
 
-function MarkdownView({ markdown }: { markdown: string }) {
-  const blocks: Array<{ type: 'code' | 'text'; content: string }> = [];
-  let inCode = false;
-  let buffer: string[] = [];
-  const flush = (type: 'code' | 'text') => {
-    const content = buffer.join('\n').trim();
-    if (content) blocks.push({ type, content });
-    buffer = [];
-  };
-  for (const line of markdown.split('\n')) {
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        flush('code');
-        inCode = false;
-      } else {
-        flush('text');
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      buffer.push(line);
-      continue;
-    }
-    if (!line.trim()) {
-      flush('text');
-      continue;
-    }
-    buffer.push(line);
-  }
-  flush(inCode ? 'code' : 'text');
-  return (
-    <div className="space-y-4">
-      {blocks.map((block, index) => {
-        if (block.type === 'code') {
-          return <pre key={index} className="ui-modal-scroll overflow-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-soft)] p-4 text-xs leading-6 text-[var(--text-primary)]">{block.content}</pre>;
-        }
-        const text = block.content.trim();
-        if (!text) return null;
-        if (text.startsWith('# ')) return <h1 key={index} className="text-3xl font-bold text-[var(--text-primary)]">{text.slice(2)}</h1>;
-        if (text.startsWith('## ')) return <h2 key={index} className="pt-3 text-2xl font-bold text-[var(--text-primary)]">{text.slice(3)}</h2>;
-        if (text.startsWith('### ')) return <h3 key={index} className="pt-2 text-xl font-bold text-[var(--text-primary)]">{text.slice(4)}</h3>;
-        if (/^[-*] /.test(text) || /^\d+\. /.test(text)) {
-          return (
-            <ul key={index} className="space-y-2 pl-5 text-sm leading-7 text-[var(--text-secondary)]">
-              {text.split('\n').map((line) => <li key={line} className="list-disc">{renderInlineMarkdown(line.replace(/^[-*] |\d+\. /, ''))}</li>)}
-            </ul>
-          );
-        }
-        return <p key={index} className="text-sm leading-7 text-[var(--text-secondary)]">{renderInlineMarkdown(text)}</p>;
-      })}
-    </div>
-  );
-}
-
-function renderInlineMarkdown(text: string) {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
-  return parts.map((part, index) => {
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return <code key={index} className="rounded bg-[var(--surface-soft)] px-1.5 py-0.5 font-mono text-xs text-blue-700">{part.slice(1, -1)}</code>;
-    }
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={index} className="font-bold text-[var(--text-primary)]">{part.slice(2, -2)}</strong>;
-    }
-    return <React.Fragment key={index}>{part}</React.Fragment>;
-  });
-}
-
-export function TestIdentityDocsPage() {
-  const navigate = useNavigate();
-  return (
-    <div data-theme="light" className="dashboard-theme min-h-dvh bg-[var(--bg)] p-4 text-[var(--text-primary)] md:p-8">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <button type="button" onClick={() => navigate(-1)} className="ui-button-secondary inline-flex items-center gap-2">
-          <ArrowLeft className="h-4 w-4" />返回
-        </button>
-        <article className="ui-card p-5 md:p-8">
-          <MarkdownView markdown={testIdentityDocsMarkdown} />
-        </article>
-      </div>
-    </div>
-  );
-}
-
 export function TestIdentityDevPage() {
   const params = useParams();
-  const navigate = useNavigate();
+  const { theme, setTheme } = useThemeMode('light');
   const name = String(params.name || '').replace(/^@/, '');
   const [data, setData] = React.useState<any>(null);
   const [apps, setApps] = React.useState<any[]>([]);
@@ -981,11 +898,10 @@ export function TestIdentityDevPage() {
   useBodyScrollLock(modalOpen);
 
   const load = React.useCallback(async () => {
-    const header = localStorage.getItem('sso_admin_auth') || '';
     try {
       const [identityRes, appsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/admin/test-identities/by-name/${encodeURIComponent(name)}`, { headers: { Authorization: header } }),
-        fetch(`${API_BASE}/admin/apps`, { headers: { Authorization: header } }),
+        adminRequest(`${API_BASE}/api/admin/test-identities/by-name/${encodeURIComponent(name)}`),
+        adminRequest(`${API_BASE}/admin/apps`),
       ]);
       const identityBody = await identityRes.json().catch(() => ({}));
       const appsBody = await appsRes.json().catch(() => ({}));
@@ -1004,10 +920,8 @@ export function TestIdentityDevPage() {
 
   const saveAccessNow = async (next: TestIdentityForm) => {
     if (!data?.test_identity) return;
-    const header = localStorage.getItem('sso_admin_auth') || '';
-    const res = await fetch(`${API_BASE}/api/admin/test-identities/${data.test_identity.id}`, {
+    const res = await adminRequest(`${API_BASE}/api/admin/test-identities/${data.test_identity.id}`, {
       method: 'PUT',
-      headers: { Authorization: header, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         role: next.role,
         allowed_subapps: next.allowed_subapps,
@@ -1034,11 +948,12 @@ export function TestIdentityDevPage() {
   };
 
   return (
-    <div data-theme="light" className="dashboard-theme min-h-dvh bg-[var(--bg)] p-4 text-[var(--text-primary)] md:p-8">
+    <div data-theme={theme} className="dashboard-theme min-h-dvh bg-[var(--bg)] p-4 text-[var(--text-primary)] md:p-8">
       <div className="mx-auto max-w-5xl space-y-6">
-        <button type="button" onClick={() => navigate(-1)} className="ui-button-secondary inline-flex items-center gap-2">
-          <ArrowLeft className="h-4 w-4" />返回
-        </button>
+        <div className="flex items-center justify-between gap-3">
+          <Link to="/dash" className="ui-button-secondary inline-flex items-center gap-2 no-underline"><ArrowLeft className="h-4 w-4" />返回</Link>
+          <ThemeToggle theme={theme} onChange={setTheme} />
+        </div>
         <header className="ui-card p-5 md:p-7">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>

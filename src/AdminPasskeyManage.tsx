@@ -4,6 +4,7 @@ import { ArrowLeft, Edit2, Key, LogOut, Shield, Trash2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { startRegistration } from '@simplewebauthn/browser';
 import { ThemeToggle, useThemeMode } from './theme';
+import { adminRequest } from './adminSessionClient';
 
 const API_BASE = '';
 
@@ -16,7 +17,6 @@ type PasskeyItem = {
 export default function AdminPasskeyManage() {
   const navigate = useNavigate();
   const { theme, setTheme } = useThemeMode('dark');
-  const [authHeader] = React.useState(() => localStorage.getItem('sso_admin_auth') || '');
   const [bindToken, setBindToken] = React.useState('');
   const [passkeys, setPasskeys] = React.useState<PasskeyItem[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -31,15 +31,7 @@ export default function AdminPasskeyManage() {
   }, [navigate]);
 
   const fetchBindToken = React.useCallback(async () => {
-    if (!authHeader) {
-      logoutAdmin();
-      throw new Error('Admin login required');
-    }
-
-    const res = await fetch(`${API_BASE}/admin/bind-token`, {
-      method: 'POST',
-      headers: { Authorization: authHeader },
-    });
+    const res = await adminRequest(`${API_BASE}/admin/bind-token`, { method: 'POST' });
 
     if (!res.ok) {
       logoutAdmin();
@@ -49,7 +41,7 @@ export default function AdminPasskeyManage() {
     const data = await res.json();
     setBindToken(data.bind_token);
     return data.bind_token as string;
-  }, [authHeader, logoutAdmin]);
+  }, [logoutAdmin]);
 
   const authFetch = React.useCallback(async (path: string, options: RequestInit = {}, retry = true) => {
     const token = bindToken || await fetchBindToken();
@@ -217,7 +209,7 @@ export default function AdminPasskeyManage() {
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <ThemeToggle theme={theme} onChange={setTheme} />
-            <Link to="/" className="ui-button-secondary inline-flex items-center gap-2 no-underline">
+            <Link to="/dash" className="ui-button-secondary inline-flex items-center gap-2 no-underline">
               <ArrowLeft className="h-4 w-4" />
               Back
             </Link>

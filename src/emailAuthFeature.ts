@@ -1,6 +1,8 @@
 import type { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { generateSalt, generateJWT, verifyJWT } from './auth';
+import { durableSessionActive, issueDurableSession } from './durableSession';
+import { isAllowedOAuthRedirect } from './oauthFlow';
 
 type Ctx = any;
 
@@ -258,6 +260,13 @@ async function defaultRegistrationConfig(c: Ctx) {
 async function externalRegistrationEnabled(c: Ctx) {
   const value = await getSetting(c, 'external_registration_enabled', true);
   return value !== false;
+}
+
+async function recordExternalRegistration(c: Ctx, uuid: string) {
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO registration_events (id, user_uuid, channel, source, created_at)
+    VALUES (?, ?, 'email', 'external', ?)
+  `).bind(crypto.randomUUID(), uuid, nowIso()).run();
 }
 
 function containsAdmin(value: string) {
@@ -637,6 +646,12 @@ function renderEmail(templateName: string, payload: any) {
       intro: `你好，${username}：你的账号已被管理员恢复，可以继续使用 Auth Center。`,
       action: '打开 Auth Center',
     },
+    oauth_linked: {
+      subject: '新的登录方式已绑定 - Auth Center',
+      heading: '新的登录方式已绑定',
+      intro: `你好，${username}：你的账号刚刚绑定了 ${escapeHtml(String(payload.provider || 'OAuth'))} 登录。如果不是你本人操作，请立即检查账号安全。`,
+      action: '查看账号安全',
+    },
     test_email: {
       subject: 'send test',
       heading: 'send test',
@@ -649,7 +664,7 @@ function renderEmail(templateName: string, payload: any) {
   return { subject: item.subject, html, text: `${item.intro}\n\n${appUrl ? `${item.action}: ${appUrl}\n\n` : ''}有效期：${expire} 分钟。${security}` };
 }
 
-async function enqueueEmail(c: Ctx, toEmail: string, templateName: string, payload: Record<string, unknown>, subjectOverride = '') {
+export async function enqueueEmail(c: Ctx, toEmail: string, templateName: string, payload: Record<string, unknown>, subjectOverride = '') {
   const rendered = renderEmail(templateName, payload);
   const id = crypto.randomUUID();
   await c.env.DB.prepare(`
@@ -724,21 +739,8 @@ async function getUserCredential(c: Ctx, uuid: string) {
 }
 
 async function createSessionAndJwt(c: Ctx, user: any, appId = 'auth-center') {
-  const accessTtl = envInt(c, 'ACCESS_TOKEN_TTL_SECONDS', ACCESS_TOKEN_TTL_DEFAULT);
-  const refreshTtl = envInt(c, 'REFRESH_TOKEN_TTL_SECONDS', REFRESH_TOKEN_TTL_DEFAULT);
-  const refreshToken = crypto.randomUUID() + crypto.randomUUID();
-  const sessionId = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + refreshTtl * 1000).toISOString();
-  await c.env.DB.prepare(`
-    INSERT INTO auth_sessions (id, user_id, refresh_token_hash, user_agent, ip_hash, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(sessionId, user.uuid || user.id, await hashSecret(c, refreshToken), getUserAgent(c), await ipHash(c), nowIso(), expiresAt).run();
-  await c.env.DB.prepare(`
-    INSERT INTO user_sessions (session_id, uuid, username, ip_address, user_agent, browser, device_type, app_id, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(sessionId, user.uuid || user.id, user.username, getClientIp(c), getUserAgent(c), 'Unknown', 'Unknown', appId, expiresAt).run().catch(() => null);
-  await c.env.DB.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE uuid = ? OR id = ?').bind(nowIso(), nowIso(), user.uuid || user.id, user.uuid || user.id).run();
-  const token = await generateJWT({
+  const account: any = user.cookie_expiry_days ? user : await findUserByUuid(c, user.uuid || user.id);
+  const session = await issueDurableSession(c, { ...user, cookie_expiry_days: account?.cookie_expiry_days }, {
     sub: user.uuid || user.id,
     uuid: user.uuid || user.id,
     user_id: user.user_id || user.id || user.uuid,
@@ -750,24 +752,9 @@ async function createSessionAndJwt(c: Ctx, user: any, appId = 'auth-center') {
     status: user.status || 'active',
     auth_provider: user.auth_provider || 'email',
     avatar_url: buildAvatarUrl(c, user.uuid || user.id, user.avatar_key, user.avatar_data),
-    session_id: sessionId,
-    iat: Math.floor(Date.now() / 1000),
-  }, c.env.JWT_SECRET, accessTtl / 86400);
-  setCookie(c, 'auth_refresh', refreshToken, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'Lax',
-    path: '/',
-    maxAge: refreshTtl,
-  });
-  setCookie(c, 'sso_session', token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'Lax',
-    path: '/',
-    maxAge: accessTtl,
-  });
-  return { token, sessionId };
+  }, appId);
+  await c.env.DB.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE uuid = ? OR id = ?').bind(nowIso(), nowIso(), user.uuid || user.id, user.uuid || user.id).run();
+  return session;
 }
 
 async function requireAuth(c: Ctx) {
@@ -776,6 +763,7 @@ async function requireAuth(c: Ctx) {
   if (!token) return null;
   try {
     const payload = await verifyJWT(token, c.env.JWT_SECRET);
+    if (!await durableSessionActive(c, payload)) return null;
     const user = await findUserByUuid(c, payload.sub || payload.uuid);
     if (!user || !['active', 'pending'].includes(user.status)) return null;
     return { payload, user };
@@ -829,10 +817,18 @@ async function requireAdmin(c: Ctx) {
   return null;
 }
 
-function redirectOrJson(c: Ctx, redirectUri: string | undefined, token: string, fallbackPath = '') {
+async function redirectOrJson(c: Ctx, redirectUri: string | undefined, token: string, fallbackPath = '', appId?: string) {
   if (redirectUri) {
-    const url = `${redirectUri}${redirectUri.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-    return c.json({ ok: true, token, redirect_to: url });
+    const app: any = appId ? await c.env.DB.prepare('SELECT callback_url, status FROM apps WHERE app_id = ?').bind(appId).first() : null;
+    if (!app || app.status !== 'active' || !isAllowedOAuthRedirect(app.callback_url, redirectUri)) return c.json({ ok: false, message: 'Invalid callback' }, 400);
+    const payload = await verifyJWT(token, c.env.JWT_SECRET);
+    if (payload.role !== 'admin') {
+      const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(payload.sub, appId).first();
+      if (!permission) return c.json({ ok: false, message: 'No permission for this application' }, 403);
+    }
+    const url = new URL(redirectUri);
+    url.searchParams.set('token', token);
+    return c.json({ ok: true, token, redirect_to: url.toString() });
   }
   return c.json({ ok: true, token, ...(fallbackPath ? { redirect_to: fallbackPath } : {}) });
 }
@@ -993,7 +989,8 @@ export function registerEmailAuthFeature(app: Hono<any>) {
         ]);
         await logAudit(c, 'email_verify_success', true, { method: 'register_invite' }, uuid);
         await logAudit(c, 'register_email_success', true, { email_domain: emailDomain(email), has_register_code: true, invited: true }, uuid);
-        return redirectOrJson(c, body.redirect_uri, session.token, role === 'admin' ? '/dash' : `/user/${uuid}`);
+        await recordExternalRegistration(c, uuid);
+        return redirectOrJson(c, body.redirect_uri, session.token, role === 'admin' ? '/dash' : `/user/${uuid}`, body.app_id);
       }
 
       const token = crypto.randomUUID() + crypto.randomUUID();
@@ -1004,6 +1001,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
         expire_minutes: VERIFY_TOKEN_MINUTES,
       });
       await logAudit(c, 'register_email_success', true, { email_domain: emailDomain(email), has_register_code: !!registerCode }, uuid);
+      await recordExternalRegistration(c, uuid);
       await logAudit(c, 'email_verify_sent', true, { email }, uuid);
       return c.json({ ok: true, message: generic });
     } catch (error: any) {
@@ -1040,7 +1038,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const generic = '如果信息有效，我们将发送验证邮件，请前往邮箱完成验证。';
     await logAudit(c, 'register_email_attempt', true, { email_domain: email ? emailDomain(email) : null });
     const rules = publicRegistrationRules(c);
-    if (!rules.email_registration_allowed) return c.json({ ok: false, message: rules.mode === 'invite_only' ? '当前仅支持注册码注册' : '当前暂未开放公开注册' }, 403);
+    if (!rules.email_registration_allowed || !(await externalRegistrationEnabled(c))) return c.json({ ok: false, message: rules.mode === 'invite_only' ? '当前仅支持注册码注册' : '当前暂未开放公开注册' }, 403);
     if (!email || !username || !password || password !== confirm) return c.json({ ok: true, message: generic });
     if (containsAdmin(username)) return c.json({ ok: false, message: 'Username cannot contain admin.' }, 400);
     const domainError = assertEmailDomain(c, email);
@@ -1068,6 +1066,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       INSERT INTO user_credentials (user_id, password_hash, password_algo, password_updated_at)
       VALUES (?, ?, 'pbkdf2-sha256', ?)
     `).bind(uuid, passwordHash, nowIso()).run();
+    await applyPermissionConfig(c, uuid, await defaultRegistrationConfig(c));
     const token = crypto.randomUUID() + crypto.randomUUID();
     await createToken(c, 'email_verify', uuid, email, token, addMinutes(VERIFY_TOKEN_MINUTES));
     await enqueueEmail(c, email, 'verify_email', {
@@ -1076,6 +1075,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       expire_minutes: VERIFY_TOKEN_MINUTES,
     });
     await logAudit(c, 'register_email_success', true, { email_domain: emailDomain(email) }, uuid);
+    await recordExternalRegistration(c, uuid);
     await logAudit(c, 'email_verify_sent', true, { email }, uuid);
     return c.json({ ok: true, message: generic });
   });
@@ -1182,22 +1182,11 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       identifier.toLowerCase() === String(c.env.ADMIN_USERNAME || 'admin').toLowerCase()
       || (!!adminEmail && email === adminEmail);
     if (isAdminIdentifier && password === adminPassword(c)) {
-      const token = await generateJWT({
-        sub: 'admin',
-        uuid: 'admin',
-        user_id: '0',
-        username: c.env.ADMIN_USERNAME || 'admin',
-        name: 'Admin',
-        email: c.env.ADMIN_EMAIL || null,
-        email_verified: !!c.env.ADMIN_EMAIL,
-        role: 'admin',
-        status: 'active',
-        auth_provider: 'sso',
-        iat: Math.floor(Date.now() / 1000),
-      }, c.env.JWT_SECRET, envInt(c, 'ACCESS_TOKEN_TTL_SECONDS', ACCESS_TOKEN_TTL_DEFAULT) / 86400);
-      setCookie(c, 'sso_session', token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: envInt(c, 'ACCESS_TOKEN_TTL_SECONDS', ACCESS_TOKEN_TTL_DEFAULT) });
+      const admin = { uuid: 'admin', user_id: '0', username: c.env.ADMIN_USERNAME || 'admin', name: 'Admin', email: c.env.ADMIN_EMAIL || null,
+        email_verified: !!c.env.ADMIN_EMAIL, role: 'admin', status: 'active', auth_provider: 'sso', cookie_expiry_days: Number(c.env.ADMIN_COOKIE_EXPIRY_DAYS || 7) };
+      const { token } = await issueDurableSession(c, admin, admin, body.app_id || 'auth-center');
       await logAudit(c, 'login_success', true, { method: 'admin_password' }, 'admin');
-      return redirectOrJson(c, body.redirect_uri, token, '/dash');
+      return redirectOrJson(c, body.redirect_uri, token, '/dash', body.app_id);
     }
     const user: any = email
       ? await findUserByEmail(c, email)
@@ -1227,7 +1216,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       await enqueueEmail(c, user.email, 'new_device_login', { username: user.username, action_url: `${getPublicBaseUrl(c)}/account/security`, expire_minutes: 0 });
     }
     await logAudit(c, 'login_success', true, { method: 'email' }, user.uuid || user.id);
-    return redirectOrJson(c, body.redirect_uri, token, user.role === 'admin' ? '/dash' : `/user/${user.uuid || user.id}`);
+    return redirectOrJson(c, body.redirect_uri, token, user.role === 'admin' ? '/dash' : `/user/${user.uuid || user.id}`, body.app_id);
   });
 
   app.post('/api/auth/login/otp/send', async (c) => {
@@ -1262,7 +1251,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     if (!user || user.status !== 'active' || !user.email_verified) return c.json({ ok: false, message: generic }, 401);
     const session = await createSessionAndJwt(c, user, body.app_id || 'auth-center');
     await logAudit(c, 'login_otp_success', true, {}, user.uuid || user.id);
-    return redirectOrJson(c, body.redirect_uri, session.token, user.role === 'admin' ? '/dash' : `/user/${user.uuid || user.id}`);
+    return redirectOrJson(c, body.redirect_uri, session.token, user.role === 'admin' ? '/dash' : `/user/${user.uuid || user.id}`, body.app_id);
   });
 
   app.post('/api/auth/password/forgot', async (c) => {
@@ -1318,6 +1307,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const active = await requireAuth(c);
     if (!active) return c.json({ error: 'Authentication required' }, 401);
     const user = active.user;
+    const credential = await getUserCredential(c, user.uuid || user.id);
     return c.json({ ok: true, user: {
       id: user.uuid || user.id,
       username: user.username,
@@ -1327,9 +1317,34 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       role: user.role || 'user',
       status: user.status,
       auth_provider: user.auth_provider || 'email',
+      has_password: !!credential || !['github', 'google'].includes(user.auth_provider),
       created_at: user.created_at,
       last_login_at: user.last_login_at || null,
     } });
+  });
+
+  app.post('/api/account/password/set', async (c) => {
+    const active = await requireAuth(c);
+    if (!active || active.user.status !== 'active') return c.json({ error: 'Authentication required' }, 401);
+    const userId = active.user.uuid || active.user.id;
+    if (!['github', 'google'].includes(active.user.auth_provider) || await getUserCredential(c, userId)) {
+      return c.json({ ok: false, message: 'Use change password for this account.' }, 409);
+    }
+    const body: any = await c.req.json().catch(() => ({}));
+    const password = String(body.new_password || '');
+    const problem = passwordProblem(password);
+    if (problem || password !== body.confirm_password) return c.json({ ok: false, message: problem || 'Passwords do not match.' }, 400);
+    const hash = await createPasswordHash(c, password);
+    const now = nowIso();
+    await c.env.DB.batch([
+      c.env.DB.prepare('INSERT INTO user_credentials (user_id, password_hash, password_algo, password_updated_at) VALUES (?, ?, ?, ?)')
+        .bind(userId, hash, 'pbkdf2-sha256', now),
+      c.env.DB.prepare('UPDATE users SET password_hash = ?, password_salt = ?, password_plain = ?, updated_at = ? WHERE uuid = ?')
+        .bind(hash, '', password, now, userId),
+    ]);
+    if (active.user.email) await enqueueEmail(c, active.user.email, 'password_changed', { username: active.user.username, action_url: `${getPublicBaseUrl(c)}/account/security`, expire_minutes: 0 });
+    await logAudit(c, 'password_changed', true, { method: 'oauth_password_set' }, userId);
+    return c.json({ ok: true, message: 'Password added.' });
   });
 
   app.post('/api/account/password/change', async (c) => {
@@ -1414,7 +1429,8 @@ export function registerEmailAuthFeature(app: Hono<any>) {
         s.created_at,
         s.expires_at,
         s.revoked_at,
-        COALESCE(us.app_id, 'auth-center') AS app_id
+        COALESCE(us.app_id, 'auth-center') AS app_id,
+        (SELECT GROUP_CONCAT(DISTINCT activity.app_id) FROM session_app_activity activity WHERE activity.session_id = s.id) AS app_ids
       FROM auth_sessions s
       LEFT JOIN user_sessions us ON us.session_id = s.id AND us.uuid = s.user_id
       WHERE s.user_id = ?
@@ -1491,7 +1507,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const user: any = await findUserByUuid(c, uuid);
     if (!user) return c.json({ error: 'User not found' }, 404);
     const userId = user.uuid || user.id;
-    const [{ results: sessions }, { results: registerCodes }] = await Promise.all([
+    const [{ results: sessions }, { results: registerCodes }, { results: oauthBindings }] = await Promise.all([
       c.env.DB.prepare(`
         SELECT
           us.session_id AS id,
@@ -1528,8 +1544,12 @@ export function registerEmailAuthFeature(app: Hono<any>) {
         ORDER BY uses.used_at DESC
         LIMIT 100
       `).bind(userId).all(),
+      c.env.DB.prepare(`
+        SELECT provider, provider_subject, provider_email, provider_username, linked_at, last_login_at
+        FROM oauth_identities WHERE user_uuid = ? ORDER BY provider
+      `).bind(userId).all(),
     ]);
-    return c.json({ ok: true, user, sessions: sessions || [], register_codes: registerCodes || [] });
+    return c.json({ ok: true, user, sessions: sessions || [], register_codes: registerCodes || [], oauth_bindings: oauthBindings || [] });
   });
 
   app.post('/admin/auth/users/:uuid/verify-email', async (c) => {
@@ -1741,6 +1761,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     return c.json({
       ok: true,
       external_registration_enabled: await externalRegistrationEnabled(c),
+      oauth_turnstile_threshold_per_ip_hour: await getSetting(c, 'oauth_turnstile_threshold_per_ip_hour', 3),
       config: await defaultRegistrationConfig(c),
     });
   });
@@ -1750,10 +1771,17 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     if (!admin) return c.json({ error: 'Forbidden' }, 403);
     const body: any = await c.req.json().catch(() => ({}));
     const config = normalizePermissionConfig(body);
+    const threshold = body.oauth_turnstile_threshold_per_ip_hour === undefined
+      ? Number(await getSetting(c, 'oauth_turnstile_threshold_per_ip_hour', 3))
+      : Number(body.oauth_turnstile_threshold_per_ip_hour);
+    if (!Number.isSafeInteger(threshold) || threshold < 0 || threshold > 1000) {
+      return c.json({ ok: false, message: 'OAuth challenge threshold must be between 0 and 1000 per hour.' }, 400);
+    }
     await setSetting(c, 'external_registration_enabled', body.external_registration_enabled !== false);
     await setSetting(c, 'default_registration_config', config);
+    await setSetting(c, 'oauth_turnstile_threshold_per_ip_hour', threshold);
     await logAudit(c, 'admin_update_default_registration_config', true, {}, admin.user.uuid || admin.user.id);
-    return c.json({ ok: true, external_registration_enabled: body.external_registration_enabled !== false, config });
+    return c.json({ ok: true, external_registration_enabled: body.external_registration_enabled !== false, oauth_turnstile_threshold_per_ip_hour: threshold, config });
   });
 
   app.get('/admin/auth/audit-logs', async (c) => {

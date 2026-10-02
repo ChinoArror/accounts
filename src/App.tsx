@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Users, LayoutGrid, KeyRound, LogOut, CheckCircle2, XCircle, Plus, Trash2, Shield, Settings, Activity, BarChart3, PieChart, Clock, ExternalLink, Github, Zap, Globe, Database, Code2, Box, Layers, Cpu, Rocket, Star, Sparkles, Bot, Wifi, Lock, Palette, Ticket, Mail, Eye, EyeOff } from 'lucide-react';
 import { Routes, Route, useNavigate, Link, useLocation, Navigate } from 'react-router-dom';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell, Legend } from 'recharts';
 import UserProfile from './UserProfile';
 import ChangePassword from './ChangePassword';
-import SsoBinding from './SsoBinding';
 import AppDetails from './AppDetails';
 import AdminPasskeyManage from './AdminPasskeyManage';
 import UserPasskeyManage from './UserPasskeyManage';
@@ -18,8 +18,13 @@ import SessionCenter from './SessionCenter';
 import RegisterCodeManager from './RegisterCodeManager';
 import PermissionMatrix from './PermissionMatrix';
 import DatePicker from './DatePicker';
-import { TestAccess, TestIdentityDevPage, TestIdentityDocsPage } from './TestAccess';
+import { TestAccess, TestIdentityDevPage } from './TestAccess';
+import { SubappDocsPage, UserDocsPage } from './DocsPages';
 import { TestIdentityPreview } from './TestIdentityPreview';
+import LegalFooter from './LegalFooter';
+import PrivacyPolicy from './PrivacyPolicy';
+import { trackGoogleAnalyticsPageView } from './googleAnalytics';
+import { useRequiredUserSession } from './userPortal';
 import {
   AccountSecurityPage,
   AdminSecurityPage,
@@ -29,6 +34,7 @@ import {
   RegisterEmailPage,
   ResetPasswordPage,
   VerifyEmailNoticePage,
+  WelcomeNewUserPage,
 } from './EmailAuthPages';
 
 const API_BASE = ''; // Base URL for the worker (empty string to use the current origin)
@@ -74,6 +80,50 @@ function formatCompactNumber(value: number | string | null | undefined) {
 
 function formatPercent(value: number) {
   return `${roundToTwo(value).toFixed(2)}%`;
+}
+
+function ExternalRegistrationStats({ authFetch }: { authFetch: (path: string, options?: any) => Promise<Response> }) {
+  const fetchRef = React.useRef(authFetch);
+  fetchRef.current = authFetch;
+  const [granularity, setGranularity] = React.useState<'day' | 'month'>('day');
+  const [report, setReport] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
+  React.useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError('');
+    fetchRef.current(`/admin/stats/external-registrations?granularity=${granularity}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || 'Unable to load registration statistics.');
+        if (mounted) setReport(data);
+      })
+      .catch((cause) => { if (mounted) setError(cause.message || 'Unable to load statistics.'); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [granularity]);
+  const channels = [
+    { key: 'email', label: 'Email', color: '#3b82f6' },
+    { key: 'github', label: 'GitHub', color: '#22c55e' },
+    { key: 'google', label: 'Google', color: '#f97316' },
+  ];
+  return <section className="ui-card p-4 sm:p-6">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <div><h2 className="text-xl font-semibold text-[var(--text-primary)]">External registrations</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">Successful account creations · Asia/Taipei</p></div>
+      <div className="flex rounded-[8px] border border-[var(--border)] bg-[var(--surface-alt)] p-1" role="group" aria-label="Registration interval">
+        {(['day', 'month'] as const).map((value) => <button key={value} className="ui-nav-pill px-4 py-2 text-sm capitalize" data-active={granularity === value} type="button" onClick={() => setGranularity(value)}>{value}</button>)}
+      </div>
+    </div>
+    {loading ? <div className="flex h-52 items-center justify-center text-[var(--text-secondary)]"><Activity className="mr-2 h-4 w-4 animate-spin" /> Loading</div> : error ? <p className="text-sm text-[var(--danger)]">{error}</p> : report ? <>
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="ui-card-subtle p-3"><p className="text-xs text-[var(--text-secondary)]">Lifetime</p><p className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">{report.lifetime_total}</p></div>
+        {channels.map((channel) => <div key={channel.key} className="ui-card-subtle p-3"><p className="text-xs text-[var(--text-secondary)]">{channel.label} · selected period</p><p className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">{report.by_channel?.[channel.key] ?? 0}</p></div>)}
+      </div>
+      <div className="h-56 w-full sm:h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={report.series || []} margin={{ top: 5, right: 5, left: -18, bottom: 5 }}><CartesianGrid stroke="var(--border)" vertical={false} /><XAxis dataKey="period" tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} minTickGap={20} /><YAxis allowDecimals={false} tick={{ fill: 'var(--text-secondary)', fontSize: 11 }} /><RechartsTooltip /><Legend />{channels.map((channel) => <Bar key={channel.key} dataKey={channel.key} name={channel.label} stackId="registrations" fill={channel.color} />)}</BarChart></ResponsiveContainer></div>
+      <p className="mt-4 text-xs text-[var(--text-tertiary)]">{report.from} to {report.to} · {report.total} in range · {report.pending} pending verification · history traceable from {report.coverage_start ? new Date(report.coverage_start).toLocaleDateString() : 'first recorded registration'}</p>
+    </> : null}
+  </section>;
 }
 
 function normalizeAnalyticsPayload(payload: any) {
@@ -178,6 +228,85 @@ function CountrySharePanel({ countries, topCountry, totalEvents }: { countries: 
   );
 }
 
+function useDashboardBodyScrollLock(active: boolean) {
+  useLayoutEffect(() => {
+    if (!active) return;
+    const scrollY = window.scrollY;
+    const previous = {
+      bodyOverflow: document.body.style.overflow,
+      bodyPosition: document.body.style.position,
+      bodyTop: document.body.style.top,
+      bodyWidth: document.body.style.width,
+      bodyPaddingRight: document.body.style.paddingRight,
+      htmlOverflow: document.documentElement.style.overflow,
+    };
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+    if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous.bodyOverflow;
+      document.body.style.position = previous.bodyPosition;
+      document.body.style.top = previous.bodyTop;
+      document.body.style.width = previous.bodyWidth;
+      document.body.style.paddingRight = previous.bodyPaddingRight;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [active]);
+}
+
+function DashboardModalLayer({
+  modalKey,
+  onClose,
+  children,
+}: {
+  modalKey: 'quota' | 'password' | null;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  if (typeof document === 'undefined') return null;
+  const modal = modalKey ? (
+    <motion.div
+      key={modalKey}
+      className="fixed inset-0 z-[2147483647] flex items-end justify-center overscroll-none bg-black/60 p-0 text-white backdrop-blur-sm md:items-center md:p-4"
+      initial={false}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 1 }}
+      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 28, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.985 }}
+        transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+        className="relative h-dvh w-full overflow-hidden border border-white/10 bg-[#0B0F19] shadow-2xl md:h-auto md:max-h-[92dvh] md:max-w-md md:rounded-3xl"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 z-20 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/60 shadow-lg transition-colors hover:bg-white/15 hover:text-white"
+          aria-label="Close"
+        >
+          <XCircle className="h-5 w-5" />
+        </button>
+        <div className="ui-modal-scroll h-dvh touch-pan-y overflow-y-auto overscroll-contain p-6 pt-16 md:h-auto md:max-h-[92dvh]">
+          {children}
+        </div>
+      </motion.div>
+    </motion.div>
+  ) : null;
+
+  return createPortal(<AnimatePresence mode="wait">{modal}</AnimatePresence>, document.body);
+}
+
 function Dashboard() {
   const [credentials, setCredentials] = useState({ username: '', password: '' });
   const { theme, setTheme } = useThemeMode('dark');
@@ -208,6 +337,8 @@ function Dashboard() {
   const [ssoRedirect, setSsoRedirect] = useState('');
   const [ssoLoading, setSsoLoading] = useState(false);
   const [ssoError, setSsoError] = useState('');
+  const dashboardModalKey = quotaModal ? 'quota' : passwordModal ? 'password' : null;
+  useDashboardBodyScrollLock(Boolean(dashboardModalKey));
 
   // Check login state & Auto SSO Trigger
   useEffect(() => {
@@ -229,22 +360,21 @@ function Dashboard() {
       localStorage.removeItem('sso_admin_name');
     }
 
-    if (saved && !saved.startsWith('Basic ')) {
-      setAuthHeader(saved);
-      setIsLogged(true);
-      setAdminName(localStorage.getItem('sso_admin_name') || 'Admin');
-      setCheckingAdminSession(false);
-    } else {
-      fetch(`${API_BASE}/api/session`, { credentials: 'include' })
+    {
+      fetch(`${API_BASE}/api/auth/session/continue`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' })
         .then((res) => res.ok ? res.json() : null)
         .then((data) => {
-          if (data?.active && (data.user?.role === 'admin' || data.role === 'admin') && data.token) {
+          if (data?.ok && (data.user?.role === 'admin' || data.role === 'admin') && data.token) {
             const header = `Bearer ${data.token}`;
             localStorage.setItem('sso_admin_auth', header);
             localStorage.setItem('sso_admin_name', data.user?.name || data.user?.username || 'Admin');
             setAuthHeader(header);
             setAdminName(data.user?.name || data.user?.username || 'Admin');
             setIsLogged(true);
+          } else {
+            localStorage.removeItem('sso_admin_auth');
+            localStorage.removeItem('sso_admin_name');
+            navigate('/login', { replace: true });
           }
         })
         .catch(() => null)
@@ -262,24 +392,17 @@ function Dashboard() {
 
   const checkSsoSession = async (appId: string, redirect: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/session`);
+      const res = await fetch(`${API_BASE}/api/auth/session/continue`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app_id: appId, redirect_uri: redirect }) });
       if (res.ok) {
         const data = await res.json();
-        if (data.active) {
-          const verifyRes = await fetch(`${API_BASE}/api/verify?app_id=${appId}`, {
-            headers: { 'Authorization': `Bearer ${data.token}` }
-          });
-          if (verifyRes.ok) {
+        if (data.ok) {
             await fetch(`${API_BASE}/api/track`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ app_id: appId, uuid: data.user.uuid, event_type: 'sso_auto_login', duration_seconds: 0 })
             });
-            window.location.href = `${redirect}${redirect.includes('?') ? '&' : '?'}token=${data.token}`;
+            window.location.href = data.redirect_to;
             return;
-          } else {
-            setSsoError('You do not have permission to access this app.');
-          }
         }
       }
     } catch (err) {
@@ -391,11 +514,24 @@ function Dashboard() {
   };
 
   const authFetch = async (path: string, options: any = {}) => {
-    const res = await fetch(`${API_BASE}${path}`, {
+    let res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: { ...options.headers, 'Authorization': authHeader, 'Content-Type': 'application/json' }
     });
-    if (res.status === 401) handleLogout();
+    if (res.status === 401) {
+      const continued = await fetch(`${API_BASE}/api/auth/session/continue`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = continued.ok ? await continued.json() : null;
+      if (data?.ok && data.user?.role === 'admin') {
+        const nextHeader = `Bearer ${data.token}`;
+        localStorage.setItem('sso_admin_auth', nextHeader);
+        setAuthHeader(nextHeader);
+        res = await fetch(`${API_BASE}${path}`, { ...options, headers: { ...options.headers, 'Authorization': nextHeader, 'Content-Type': 'application/json' } });
+      } else {
+        localStorage.removeItem('sso_admin_auth');
+        setIsLogged(false);
+        navigate('/login', { replace: true });
+      }
+    }
     return res;
   };
 
@@ -676,12 +812,21 @@ function Dashboard() {
             )}
           </motion.div>
         </div>
+        <LegalFooter />
       </div>
     );
   }
 
   if (!isLogged) {
-    if (checkingAdminSession) return null;
+    if (checkingAdminSession) return (
+      <div data-theme={theme} className="dashboard-theme admin-session-loading min-h-dvh bg-[var(--bg)] text-[var(--text-primary)]" role="status" aria-live="polite">
+        <div className="admin-session-loading-content">
+          <span className="ui-logo-badge"><Activity className="h-5 w-5" /></span>
+          <span className="font-semibold">Auth Center</span>
+          <span className="text-sm text-[var(--text-secondary)]">Restoring your session...</span>
+        </div>
+      </div>
+    );
     return <Navigate to="/login" replace />;
   }
 
@@ -755,8 +900,8 @@ function Dashboard() {
         </div>
       </motion.aside>
 
-      <main className="flex-1 overflow-y-auto overflow-x-hidden z-10 relative bg-[var(--bg)]">
-        <div className="max-w-7xl mx-auto p-4 md:p-8 lg:p-10">
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden z-10 relative bg-[var(--bg)]">
+        <div className="mx-auto w-full max-w-7xl flex-1 p-4 md:p-8 lg:p-10">
           <div className="ui-page-header mb-8 p-5 md:p-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)] mb-2">Admin Workspace</p>
@@ -773,15 +918,6 @@ function Dashboard() {
                 <KeyRound className="w-4 h-4 text-[var(--primary)]" />
                 Passkeys
               </Link>
-              <motion.a
-                href={`${API_BASE}/api/github/login?admin_bind=admin`}
-                target="_blank" rel="noreferrer"
-                className="ui-button-secondary inline-flex items-center gap-2 no-underline"
-                title="Bind GitHub for Admin"
-              >
-                <Github className="w-4 h-4" />
-                GitHub Bind
-              </motion.a>
             </div>
           </div>
         <AnimatePresence mode="wait">
@@ -1040,6 +1176,7 @@ function Dashboard() {
 
               return (
                 <div className="space-y-8 pb-12">
+                  <ExternalRegistrationStats authFetch={authFetch} />
                   <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white/5 p-8 rounded-[2.5rem] border border-white/10 backdrop-blur-xl mb-4 relative overflow-hidden group">
                     <div className="absolute inset-0 bg-gradient-to-r from-purple-500/10 to-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
                     <div className="relative">
@@ -1215,133 +1352,125 @@ function Dashboard() {
         </AnimatePresence>
         </div>
 
-        {quotaModal && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-              className="bg-[#0B0F19] border border-white/10 rounded-3xl p-6 w-full max-w-md shadow-2xl relative"
-            >
-              <button
-                onClick={() => setQuotaModal(null)}
-                className="absolute top-4 right-4 text-white/50 hover:text-white p-2 rounded-xl hover:bg-white/10 transition-colors"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
-
-              <h2 className="text-2xl font-bold mb-1 text-blue-300">Usage Limits</h2>
-              <p className="text-white/50 text-sm mb-6 pb-4 border-b border-white/10">Configure quota for {quotaModal.user_name} on {quotaModal.app_name}</p>
-
+        <DashboardModalLayer
+          modalKey={dashboardModalKey}
+          onClose={() => {
+            setQuotaModal(null);
+            setPasswordModal(null);
+          }}
+        >
+          {quotaModal ? (
+            <>
+              <h2 className="mb-1 text-2xl font-bold text-blue-300">Usage Limits</h2>
+              <p className="mb-6 border-b border-white/10 pb-4 text-sm text-white/50">Configure quota for {quotaModal.user_name} on {quotaModal.app_name}</p>
               <form onSubmit={updateQuota} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-white/70 mb-1">Requests Per Minute (RPM)</label>
-                  <input name="rpm_limit" type="number" defaultValue={quotaModal.rpm_limit ?? ''} placeholder="Unlimited" className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-white/20" />
+                  <label className="mb-1 block text-sm font-medium text-white/70">Requests Per Minute (RPM)</label>
+                  <input name="rpm_limit" type="number" defaultValue={quotaModal.rpm_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white/70 mb-1">Requests Per Day (RPD)</label>
-                  <input name="rpd_limit" type="number" defaultValue={quotaModal.rpd_limit ?? ''} placeholder="Unlimited" className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-white/20" />
+                  <label className="mb-1 block text-sm font-medium text-white/70">Requests Per Day (RPD)</label>
+                  <input name="rpd_limit" type="number" defaultValue={quotaModal.rpd_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white/70 mb-1">Tokens Per Day (k)</label>
-                  <input
-                    name="daily_token_limit_k"
-                    type="number"
-                    defaultValue={quotaModal.daily_token_limit != null ? Math.round(quotaModal.daily_token_limit / 1000) : ''}
-                    placeholder="Unlimited"
-                    min="0"
-                    step="1"
-                    className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-white/20"
-                  />
-                  <p className="text-xs text-white/30 mt-1">Enter in thousands. e.g. 100 = 100k tokens/day</p>
+                  <label className="mb-1 block text-sm font-medium text-white/70">Tokens Per Day (k)</label>
+                  <input name="daily_token_limit_k" type="number" defaultValue={quotaModal.daily_token_limit != null ? Math.round(quotaModal.daily_token_limit / 1000) : ''} placeholder="Unlimited" min="0" step="1" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
+                  <p className="mt-1 text-xs text-white/30">Enter in thousands. e.g. 100 = 100k tokens/day</p>
                 </div>
-
-                <div className="pt-4 flex justify-end gap-3">
-                  <button type="button" onClick={() => setQuotaModal(null)} className="px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/5 transition-colors">Cancel</button>
-                  <button type="submit" className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg transition-colors">Save Quota</button>
+                <div className="flex justify-end gap-3 pt-4">
+                  <button type="button" onClick={() => setQuotaModal(null)} className="rounded-xl border border-white/10 px-5 py-2.5 transition-colors hover:bg-white/5">Cancel</button>
+                  <button type="submit" className="rounded-xl bg-blue-600 px-5 py-2.5 font-medium text-white shadow-lg transition-colors hover:bg-blue-500">Save Quota</button>
                 </div>
               </form>
-            </motion.div>
-          </div>
-        )}
-
-        {passwordModal && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-              className="bg-[#0B0F19] border border-white/10 rounded-3xl p-6 w-full max-w-md shadow-2xl relative"
-            >
-              <button
-                onClick={() => setPasswordModal(null)}
-                className="absolute top-4 right-4 text-white/50 hover:text-white p-2 rounded-xl hover:bg-white/10 transition-colors"
-                type="button"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
-
-              <h2 className="text-2xl font-bold mb-1 text-blue-300">Overwrite Password</h2>
-              <p className="text-white/50 text-sm mb-6 pb-4 border-b border-white/10">
-                Set a new password for {passwordModal.name || passwordModal.username}. The plaintext value will be shown in admin dash.
-              </p>
-
+            </>
+          ) : passwordModal ? (
+            <>
+              <h2 className="mb-1 text-2xl font-bold text-blue-300">Overwrite Password</h2>
+              <p className="mb-6 border-b border-white/10 pb-4 text-sm text-white/50">Set a new password for {passwordModal.name || passwordModal.username}. The plaintext value will be shown in admin dash.</p>
               <form onSubmit={overwriteUserPassword} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-white/70 mb-1">New Password</label>
-                  <input name="password" type="text" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-white/20" />
+                  <label className="mb-1 block text-sm font-medium text-white/70">New Password</label>
+                  <input name="password" type="text" required className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
-                <div className="pt-4 flex justify-end gap-3">
-                  <button type="button" onClick={() => setPasswordModal(null)} className="px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/5 transition-colors">Cancel</button>
-                  <button type="submit" className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg transition-colors">Save Password</button>
+                <div className="flex justify-end gap-3 pt-4">
+                  <button type="button" onClick={() => setPasswordModal(null)} className="rounded-xl border border-white/10 px-5 py-2.5 transition-colors hover:bg-white/5">Cancel</button>
+                  <button type="submit" className="rounded-xl bg-blue-600 px-5 py-2.5 font-medium text-white shadow-lg transition-colors hover:bg-blue-500">Save Password</button>
                 </div>
               </form>
-            </motion.div>
-          </div>
-        )}
+            </>
+          ) : null}
+        </DashboardModalLayer>
+        <LegalFooter />
       </main>
     </div>
   );
 }
 
+function UserIndexRedirect() {
+  const navigate = useNavigate();
+  const { session } = useRequiredUserSession();
+  useEffect(() => {
+    if (session) navigate(session.role === 'admin' ? '/dash' : `/user/${session.uuid}`, { replace: true });
+  }, [navigate, session]);
+  return <div className="dashboard-theme ac-route-loading" role="status">Loading your account...</div>;
+}
+
 export default function App() {
   const location = useLocation();
+  useEffect(() => {
+    if (location.pathname === '/privacy') window.scrollTo(0, 0);
+  }, [location.pathname]);
+  useEffect(() => {
+    trackGoogleAnalyticsPageView(location.pathname);
+  }, [location.pathname]);
+
   const isProfileMatch = location.pathname.match(/^\/@([^/]+)\/?$/);
+  const footerIsRenderedByPage = location.pathname === '/' || location.pathname === '/dash'
+    || ['/login', '/register', '/register/code', '/register/email', '/welcomenewuser', '/verify-email', '/forgot-password', '/reset-password'].includes(location.pathname);
 
   if (isProfileMatch) {
-    // Return UserProfile, but we need to modify UserProfile to accept username prop or params.
-    // Wait, UserProfile reads from useParams(). So rendering it directly will fail to read username.
-    // Or we can just render the profile inside a route:
     return (
-      <Routes>
-        <Route path={location.pathname} element={<UserProfile usernameOverride={decodeURIComponent(isProfileMatch[1])} />} />
-      </Routes>
+      <div className="ac-page-shell">
+        <Routes>
+          <Route path={location.pathname} element={<UserProfile usernameOverride={decodeURIComponent(isProfileMatch[1])} />} />
+        </Routes>
+        <LegalFooter />
+      </div>
     );
   }
 
-  return (
+  const routes = (
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/dash" element={<Dashboard />} />
-      <Route path="/dev/docs" element={<TestIdentityDocsPage />} />
+      <Route path="/dev/docs" element={<SubappDocsPage />} />
       <Route path="/dev/:name" element={<TestIdentityDevPage />} />
       <Route path="/preview" element={<TestIdentityPreview />} />
       <Route path="/admin/passkey" element={<AdminPasskeyManage />} />
       <Route path="/admin/security" element={<AdminSecurityPage />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
       <Route path="/login" element={<EmailLoginPage />} />
       <Route path="/register/email" element={<Navigate to="/register" replace />} />
       <Route path="/register/code" element={<Navigate to="/register" replace />} />
       <Route path="/register" element={<RegisterEmailPage />} />
+      <Route path="/welcomenewuser" element={<WelcomeNewUserPage />} />
       <Route path="/verify-email" element={<VerifyEmailNoticePage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/account/security" element={<AccountSecurityPage />} />
+      <Route path="/user/docs" element={<UserDocsPage />} />
+      <Route path="/user" element={<UserIndexRedirect />} />
       <Route path="/user/:uuid" element={<UserHome />} />
       <Route path="/users/*" element={<UserLogin />} />
       <Route path="/session" element={<SessionCenter />} />
       <Route path="/:uuid/edit" element={<UserEditProfile />} />
       <Route path="/:uuid/change-password" element={<ChangePassword />} />
-      <Route path="/:uuid/sso-binding" element={<SsoBinding />} />
       <Route path="/:uuid/passkey" element={<UserPasskeyManage />} />
       <Route path="/:uuid" element={<UserHome />} />
       <Route path="/app/:appId" element={<AppDetails />} />
       <Route path="/*" element={<LandingPage />} />
     </Routes>
   );
+  if (footerIsRenderedByPage) return routes;
+  return <div className="ac-page-shell">{routes}<LegalFooter className={location.pathname.startsWith('/app/') ? 'ac-app-details-footer' : ''} /></div>;
 }

@@ -1,7 +1,10 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Github,
+  BookOpen,
+  Link2,
   ImagePlus,
   KeyRound,
   LockKeyhole,
@@ -12,6 +15,7 @@ import {
   Settings2,
   Shield,
   Ticket,
+  Trash2,
   X,
 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -19,7 +23,8 @@ import { ThemeToggle, useThemeMode } from './theme';
 import { API_BASE, formatDateTime, useRequiredUserSession } from './userPortal';
 import DatePicker from './DatePicker';
 
-type ModalKind = 'profile' | 'avatarCrop' | 'email' | 'password' | 'code' | 'sessions' | null;
+type ModalKind = 'profile' | 'avatarCrop' | 'email' | 'password' | 'code' | 'sessions' | 'oauth' | null;
+type OAuthBinding = { provider: 'github' | 'google'; provider_subject: string; provider_email?: string | null; provider_username?: string | null; linked_at: string };
 
 type AvatarEditorState = {
   sourceUrl: string;
@@ -48,9 +53,9 @@ function Notice({ children, tone = 'normal' }: { children: React.ReactNode; tone
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
-  return (
+  return createPortal(
     <motion.div
-      className="fixed inset-0 z-50 flex overscroll-contain bg-[var(--overlay)] p-3 backdrop-blur-sm sm:items-center sm:justify-center sm:p-6"
+      className="dashboard-theme fixed inset-0 z-[2147483647] flex overscroll-contain bg-[var(--overlay)] p-3 backdrop-blur-sm sm:items-center sm:justify-center sm:p-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -76,7 +81,8 @@ function Modal({ title, children, onClose, wide = false }: { title: string; chil
         </div>
         {children}
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -239,7 +245,7 @@ export default function UserHome() {
   const navigate = useNavigate();
   const { theme, setTheme } = useThemeMode('light');
   const { session, loading, setSession } = useRequiredUserSession(uuid);
-  const [modal, setModal] = React.useState<ModalKind>(null);
+  const [modal, setModal] = React.useState<ModalKind>(new URLSearchParams(window.location.search).get('panel') === 'oauth' ? 'oauth' : null);
   const [message, setMessage] = React.useState('');
   const [rules, setRules] = React.useState<any>(null);
   const [sessions, setSessions] = React.useState<any[]>([]);
@@ -260,6 +266,10 @@ export default function UserHome() {
   const [passwordForm, setPasswordForm] = React.useState({ newPassword: '', confirm: '' });
   const [registerCode, setRegisterCode] = React.useState('');
   const [saving, setSaving] = React.useState(false);
+  const [oauthBindings, setOauthBindings] = React.useState<OAuthBinding[]>([]);
+  const [oauthLoading, setOauthLoading] = React.useState(true);
+  const [oauthError, setOauthError] = React.useState(false);
+  const [unlinkProvider, setUnlinkProvider] = React.useState<'github' | 'google' | null>(null);
 
   React.useEffect(() => {
     fetch(`${API_BASE}/api/auth/registration/rules`)
@@ -293,6 +303,26 @@ export default function UserHome() {
   React.useEffect(() => {
     if (session) void loadSessions();
   }, [session, loadSessions]);
+
+  const loadOauthBindings = React.useCallback(async () => {
+    setOauthLoading(true);
+    setOauthError(false);
+    try {
+      const response = await fetch(`${API_BASE}/api/account/oauth-bindings`, { credentials: 'include' });
+      if (!response.ok) throw new Error('Unable to load linked accounts');
+      const data = await response.json();
+      setOauthBindings(data.bindings || []);
+    } catch (error) {
+      setOauthError(true);
+      throw error;
+    } finally {
+      setOauthLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (session) void loadOauthBindings().catch(() => setMessage('Unable to load linked accounts.'));
+  }, [session, loadOauthBindings]);
 
   React.useEffect(() => {
     if (!modal || typeof document === 'undefined') return;
@@ -472,6 +502,35 @@ export default function UserHome() {
     }
   };
 
+  const beginOauthBinding = async (provider: 'github' | 'google') => {
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/session/continue`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (!response.ok) throw new Error('Session expired');
+      window.location.assign(`/api/${provider}/login?bind=1`);
+    } catch {
+      navigate('/login', { replace: true });
+    }
+  };
+
+  const removeOauthBinding = async () => {
+    if (!unlinkProvider || saving) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/account/oauth-bindings/${unlinkProvider}`, { method: 'DELETE', credentials: 'include' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to remove account');
+      await loadOauthBindings();
+      setUnlinkProvider(null);
+      setMessage('Account unlinked. Your account email has not changed.');
+    } catch (error: any) {
+      setMessage(error.message || 'Unable to remove account');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const markAvatarDeleted = () => {
     setProfileForm((current) => ({
       ...current,
@@ -539,6 +598,7 @@ export default function UserHome() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Link to="/user/docs" className="ui-button-secondary inline-flex items-center justify-center gap-2" aria-label="User guide"><BookOpen className="h-4 w-4" /><span className="hidden sm:inline">Guide</span></Link>
             <ThemeToggle theme={theme} onChange={setTheme} />
             <button type="button" onClick={signOut} className="ui-button-secondary inline-flex items-center justify-center gap-2">
               <LogOut className="h-4 w-4" /> Sign out
@@ -612,12 +672,12 @@ export default function UserHome() {
                   <span className="block text-sm font-semibold text-[var(--text-primary)]">{action.title}</span>
                 </motion.button>
               ))}
-              <Link to={`/${session.uuid}/sso-binding`} className="ui-card-subtle min-h-[112px] p-4 text-left no-underline transition hover:-translate-y-0.5 hover:border-[var(--primary)]">
+              <button type="button" onClick={() => setModal('oauth')} className="ui-card-subtle min-h-[112px] p-4 text-left transition hover:-translate-y-0.5 hover:border-[var(--primary)]">
                 <span className="ui-logo-badge mb-4 h-10 w-10 rounded-[12px]">
-                  <Github className="h-5 w-5" />
+                  <Link2 className="h-5 w-5" />
                 </span>
-                <span className="block text-sm font-semibold text-[var(--text-primary)]">Bind GitHub</span>
-              </Link>
+                <span className="block text-sm font-semibold text-[var(--text-primary)]">Bind other account</span>
+              </button>
               <Link to={`/${session.uuid}/passkey`} className="ui-card-subtle min-h-[112px] p-4 text-left no-underline transition hover:-translate-y-0.5 hover:border-[var(--primary)]">
                 <span className="ui-logo-badge mb-4 h-10 w-10 rounded-[12px]">
                   <KeyRound className="h-5 w-5" />
@@ -630,6 +690,41 @@ export default function UserHome() {
       </main>
 
       <AnimatePresence>
+        {modal === 'oauth' && !unlinkProvider ? (
+          <Modal title="Bind other account" onClose={() => setModal(null)}>
+            <div className="grid gap-3">
+              {oauthLoading ? <p className="py-5 text-center text-sm text-[var(--text-secondary)]">Loading linked accounts...</p> : oauthError ? <button type="button" className="ui-button-secondary" onClick={() => void loadOauthBindings().catch(() => setMessage('Unable to load linked accounts.'))}>Retry loading</button> : (['google', 'github'] as const).map((provider) => {
+                const linked = oauthBindings.find((item) => item.provider === provider);
+                return linked ? (
+                  <div key={provider} className="ui-card-subtle flex min-w-0 items-center justify-between gap-3 p-4">
+                    <div className="min-w-0">
+                      <p className="font-semibold">{provider === 'google' ? 'Google' : 'GitHub'}</p>
+                      <p className="mt-1 break-all text-sm text-[var(--text-secondary)]">
+                        {provider === 'google'
+                          ? linked.provider_email || (session?.email ? `Account email: ${session.email}` : 'Google email not recorded')
+                          : linked.provider_username ? `@${linked.provider_username}` : 'GitHub username not recorded'}
+                      </p>
+                    </div>
+                    <button type="button" className="ui-icon-button shrink-0 text-[var(--danger)]" onClick={() => setUnlinkProvider(provider)} aria-label={`Unlink ${provider}`} title={`Unlink ${provider}`}><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                ) : (
+                  <button key={provider} type="button" className="ui-button-secondary flex items-center justify-center gap-2" onClick={() => void beginOauthBinding(provider)}>
+                    {provider === 'github' ? <Github className="h-4 w-4" /> : <span className="font-bold">G</span>} Continue with {provider === 'github' ? 'GitHub' : 'Google'}
+                  </button>
+                );
+              })}
+            </div>
+          </Modal>
+        ) : null}
+        {modal === 'oauth' && unlinkProvider ? (
+          <Modal title={`Unlink ${unlinkProvider === 'google' ? 'Google' : 'GitHub'}?`} onClose={() => setUnlinkProvider(null)}>
+            <p className="mb-6 text-sm text-[var(--text-secondary)]">This sign-in method will be removed. Your account email and other sign-in methods will remain unchanged.</p>
+            <div className="flex gap-3">
+              <button type="button" className="ui-button-secondary flex-1" onClick={() => setUnlinkProvider(null)}>Cancel</button>
+              <button type="button" className="ui-button-danger flex-1" disabled={saving} onClick={() => void removeOauthBinding()}>{saving ? 'Removing...' : 'Unlink account'}</button>
+            </div>
+          </Modal>
+        ) : null}
         {modal === 'profile' && session ? (
           <Modal title="Edit Info" onClose={() => setModal(null)}>
             <form onSubmit={updateProfile} className="space-y-5">
@@ -790,7 +885,7 @@ export default function UserHome() {
                       <p className="mt-1 break-words text-xs text-[var(--text-secondary)] [overflow-wrap:anywhere]">{item.user_agent || 'Unknown user agent'}</p>
                       <div className="mt-2 grid min-w-0 gap-1 text-xs text-[var(--text-tertiary)]">
                         <p className="min-w-0 break-all [overflow-wrap:anywhere]">IP hash: {item.ip_hash || 'N/A'}</p>
-                        <p className="min-w-0 break-all [overflow-wrap:anywhere]">App ID: {item.app_id || 'auth-center'}</p>
+                        <p className="min-w-0 break-all [overflow-wrap:anywhere]">App ID: {item.app_ids || item.app_id || 'auth-center'}</p>
                         <p>{formatDateTime(item.created_at)}</p>
                       </div>
                     </div>

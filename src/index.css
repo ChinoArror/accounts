@@ -61,6 +61,40 @@ body {
   font-family: var(--font-sans);
 }
 
+.ac-page-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+.ac-page-shell > :first-child {
+  flex: 1 0 auto;
+  min-height: 0;
+}
+
+.ac-route-loading,
+.admin-session-loading {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  color: var(--text-secondary);
+}
+
+.admin-session-loading-content {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.ac-app-details-footer {
+  --bg: #0b0f19;
+  --divider: rgba(255, 255, 255, 0.1);
+  --text-secondary: #c0cadb;
+  --text-tertiary: #9aa7bc;
+}
+
 button,
 input,
 select,
@@ -83,6 +117,22 @@ textarea {
     background:
       radial-gradient(circle at top, color-mix(in srgb, var(--primary) 8%, transparent), transparent 38%),
       linear-gradient(180deg, color-mix(in srgb, var(--surface-alt) 88%, var(--bg)) 0%, var(--bg) 100%);
+  }
+
+  .dashboard-theme .ui-auth-shell.ui-auth-shell-with-footer {
+    min-height: calc(100dvh - 58px);
+    flex: 1 0 auto;
+  }
+
+  .dashboard-theme .ui-auth-card.ui-auth-card-login {
+    max-width: 560px;
+    padding: 30px 34px;
+  }
+
+  @media (max-width: 640px) {
+    .dashboard-theme .ui-auth-card.ui-auth-card-login {
+      padding: 24px;
+    }
   }
 
   .dashboard-theme .ui-auth-card {
@@ -202,6 +252,22 @@ textarea {
   .dashboard-theme .ui-button-primary:active {
     background: var(--primary-active);
   }
+
+  .dashboard-theme .ui-button-danger {
+    min-height: 44px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 10px 16px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    transition: filter 180ms ease, transform 120ms ease;
+  }
+
+  .dashboard-theme .ui-button-danger:hover { filter: brightness(0.92); }
+  .dashboard-theme .ui-button-danger:active { transform: scale(0.98); }
+  .dashboard-theme .ui-button-danger:disabled { opacity: 0.55; cursor: not-allowed; }
 
   .dashboard-theme .ui-button-secondary {
     min-height: 40px;

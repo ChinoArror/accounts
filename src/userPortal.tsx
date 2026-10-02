@@ -71,7 +71,13 @@ export function useRequiredUserSession(expectedUuid?: string | null) {
 
     const loadSession = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/user/session`);
+        let res = await fetch(`${API_BASE}/api/user/session`, { credentials: 'include' });
+        if (res.status === 401) {
+          const continued = await fetch(`${API_BASE}/api/auth/session/continue`, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+          if (continued.ok) res = await fetch(`${API_BASE}/api/user/session`, { credentials: 'include' });
+        }
         if (!res.ok) {
           if (!cancelled) {
             navigate(buildUserLoginPath(`${location.pathname}${location.search}${location.hash}`), { replace: true });

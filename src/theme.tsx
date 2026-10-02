@@ -15,11 +15,7 @@ export function getInitialTheme(): ThemeMode {
 }
 
 export function useThemeMode(defaultTheme: ThemeMode = 'dark') {
-  const [theme, setTheme] = React.useState<ThemeMode>(defaultTheme);
-
-  React.useEffect(() => {
-    setTheme(getInitialTheme());
-  }, []);
+  const [theme, setTheme] = React.useState<ThemeMode>(() => typeof window === 'undefined' ? defaultTheme : getInitialTheme());
 
   React.useEffect(() => {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
