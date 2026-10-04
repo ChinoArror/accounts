@@ -147,9 +147,12 @@ function googleCredentials(c: Ctx) {
   return { clientId, clientSecret };
 }
 
-async function importAvatar(c: Ctx, uuid: string, source: string | null) {
+async function importAvatar(c: Ctx, uuid: string, source: string | null, provider: OAuthProvider) {
   if (!source || !c.env.AVATAR_BUCKET) return null;
   try {
+    const url = new URL(source);
+    const hosts = provider === 'github' ? ['avatars.githubusercontent.com'] : ['googleusercontent.com', 'lh3.googleusercontent.com', 'lh4.googleusercontent.com', 'lh5.googleusercontent.com', 'lh6.googleusercontent.com'];
+    if (url.protocol !== 'https:' || !hosts.includes(url.hostname)) return null;
     const response = await fetch(source, { redirect: 'error' });
     const contentType = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
     if (!response.ok || !['image/jpeg', 'image/png', 'image/webp'].includes(contentType)) return null;
@@ -170,7 +173,7 @@ async function importAvatar(c: Ctx, uuid: string, source: string | null) {
     let offset = 0;
     for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
     const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
-    const key = `avatars/${uuid}/oauth-original-${crypto.randomUUID()}.${extension}`;
+    const key = `avatars/${uuid}/original-oauth-${crypto.randomUUID()}.${extension}`;
     await c.env.AVATAR_BUCKET.put(key, bytes, { httpMetadata: { contentType } });
     return key;
   } catch { return null; }
@@ -271,7 +274,7 @@ export function registerOAuthFlow(app: Hono<any>, deps: Dependencies) {
     }
     const user = await linkedUser(c, profile);
     if (user) {
-      if (user.status !== 'active') return c.redirect('/login?error=account_unavailable');
+      if (user.status !== 'active') return c.redirect(user.status === 'paused' || user.status === 'disabled' ? '/login?error=account_paused' : '/login?error=account_unavailable');
       await c.env.DB.prepare('UPDATE oauth_identities SET last_login_at = ?, provider_email = ?, provider_username = ? WHERE provider = ? AND provider_subject = ?')
         .bind(now, profile.email, profile.username, provider, profile.subject).run();
       await log(c, 'oauth_login_success', true, user.uuid, { provider });
@@ -389,7 +392,7 @@ export function registerOAuthFlow(app: Hono<any>, deps: Dependencies) {
     const uuid = crypto.randomUUID();
     const salt = generateSalt();
     const unavailablePassword = await hashPassword(randomSecret(), salt);
-    const avatarKey = await importAvatar(c, uuid, profile.avatar_url);
+    const avatarKey = await importAvatar(c, uuid, profile.avatar_url, profile.provider);
     const base = (safeOAuthName(profile.username).toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20) || 'member');
     let username = base;
     for (let i = 0; i < 5; i++) {

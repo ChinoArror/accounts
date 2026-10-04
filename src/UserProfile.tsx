@@ -1,4 +1,6 @@
 import React from 'react';
+import PasswordStrength from './PasswordStrength';
+import { passwordProblem } from './passwordPolicy';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -300,6 +302,8 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
   const savePassword = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!user || !newPassword) return;
+    const problem = passwordProblem(newPassword);
+    if (problem) { notify(problem, 'danger'); return; }
     setBusy(true);
     try {
       const response = await adminFetch(`/admin/users/${encodeURIComponent(user.uuid)}/password`, {
@@ -631,6 +635,7 @@ export default function UserProfile({ usernameOverride }: { usernameOverride?: s
                     {showPasswordInput ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                <PasswordStrength password={newPassword} />
               </div>
               <button className="ui-button-primary w-full" disabled={busy}>{busy ? 'Saving...' : 'Save password'}</button>
             </form>

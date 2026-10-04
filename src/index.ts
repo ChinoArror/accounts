@@ -8,6 +8,7 @@ import { buildPreviewUrl, expandPreviewApps, normalizePreviewEnabled, previewSes
 import { cleanupOAuthFlow, registerOAuthFlow, isAllowedOAuthRedirect } from './oauthFlow';
 import { clearSessionCookies, durableSessionActive, findRefreshSession, issueDurableSession, recordSessionApp, refreshSeconds, revokeDurableSession, rotateRefreshSession, setAccessCookie, accessSeconds } from './durableSession';
 import { buildRegistrationSeries, parseRegistrationRange } from './registrationStats';
+import { passwordProblem } from './passwordPolicy';
 
 type D1Database = any;
 type AnalyticsEngineDataset = any;
@@ -932,18 +933,19 @@ app.post('/login', async (c) => {
       return c.json({ error: 'Invalid credentials' }, 401);
     }
 
-    if (user.status === 'paused') {
-      return c.json({ error: 'Account is paused' }, 403);
-    }
-
     const isValid = await verifyPassword(password, user.password_salt, user.password_hash);
     if (!isValid) {
       return c.json({ error: 'Invalid credentials' }, 401);
     }
+    if (user.status !== 'active') return c.json({ error: user.status === 'paused' || user.status === 'disabled' ? 'Account is paused or disabled' : 'Account is not active' }, 403);
 
     userToAuth = user;
   }
 
+  if (app_id && app_id !== 'auth-center' && userToAuth.role !== 'admin') {
+    const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(userToAuth.uuid, app_id).first();
+    if (!permission) return c.json({ error: 'You do not have permission to access this application' }, 403);
+  }
   const { token } = await issueDurableSession(c, userToAuth, buildTokenPayload(c, userToAuth), app_id || 'auth-center');
 
   return c.json({
@@ -978,10 +980,9 @@ app.post('/api/users/login', async (c) => {
     ? await c.env.DB.prepare('SELECT * FROM users WHERE lower(email) = ?').bind(loginEmail).first()
     : await c.env.DB.prepare('SELECT * FROM users WHERE lower(username) = ? OR lower(name) = ? LIMIT 1').bind(identifier.toLowerCase(), identifier.toLowerCase()).first();
   if (!user) return c.json({ error: 'Invalid credentials' }, 401);
-  if (user.status === 'paused') return c.json({ error: 'Account is paused' }, 403);
-
   const isValid = await verifyPassword(password, user.password_salt, user.password_hash);
   if (!isValid) return c.json({ error: 'Invalid credentials' }, 401);
+  if (user.status !== 'active') return c.json({ error: user.status === 'paused' || user.status === 'disabled' ? 'Account is paused or disabled' : 'Account is not active' }, 403);
 
   await issueDurableSession(c, user, buildTokenPayload(c, user), 'auth-center');
 
@@ -1000,6 +1001,8 @@ app.post('/api/register', async (c) => {
   if (!username || !password || !name || !register_code) {
     return c.json({ error: 'Username, password, full name, and register code are required' }, 400);
   }
+  const passwordError = passwordProblem(String(password));
+  if (passwordError) return c.json({ error: passwordError }, 400);
 
   if (username === c.env.ADMIN_USERNAME) {
     return c.json({ error: 'This username is reserved' }, 400);
@@ -1622,6 +1625,8 @@ app.post('/api/user/change-password', async (c) => {
   if (!newPassword || String(newPassword).trim().length < 1) {
     return c.json({ error: 'New password is required' }, 400);
   }
+  const passwordError = passwordProblem(String(newPassword));
+  if (passwordError) return c.json({ error: passwordError }, 400);
 
   const newSalt = generateSalt();
   const newHash = await hashPassword(newPassword, newSalt);
@@ -1888,9 +1893,8 @@ app.get('/api/quota/check', async (c) => {
   const quota: any = await c.env.DB.prepare('SELECT * FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(uuid, appId).first();
   if (!quota) return c.json({ error: 'Permission denied' }, 403);
 
-  // If no quota is configured at all, deny by default (admin must set limits first)
-  if (quota.rpm_limit == null && quota.rpd_limit == null && quota.daily_token_limit == null) {
-    return c.json({ error: '请设置用量限制' }, 403);
+  if ([quota.rpm_limit, quota.rpd_limit, quota.daily_token_limit].some((limit) => limit !== null && limit !== undefined && Number(limit) === 0)) {
+    return c.json({ error: 'Quota is set to zero' }, 429);
   }
 
   const today = new Date().toISOString().split('T')[0];
@@ -1900,24 +1904,23 @@ app.get('/api/quota/check', async (c) => {
     quota.used_requests_today = 0;
   }
 
-  // Block only when quota is fully exhausted (>= limit).
-  // The consume endpoint never blocks, so in-flight requests always complete
-  // even if they push usage slightly past the limit.
-  if (quota.daily_token_limit && quota.used_tokens_today >= quota.daily_token_limit) {
+  // Positive limits allow in-flight requests to finish if they exceed the quota.
+  // A zero limit denies requests before usage starts.
+  if (quota.daily_token_limit != null && quota.used_tokens_today >= quota.daily_token_limit) {
     return c.json({ error: 'Token limit exceeded' }, 429);
   }
-  if (quota.rpd_limit && quota.used_requests_today >= quota.rpd_limit) {
+  if (quota.rpd_limit != null && quota.used_requests_today >= quota.rpd_limit) {
     return c.json({ error: 'Daily request limit exceeded' }, 429);
   }
 
-  const remaining_tokens = quota.daily_token_limit
+  const remaining_tokens = quota.daily_token_limit != null
     ? Math.max(0, quota.daily_token_limit - quota.used_tokens_today)
     : null;
-  const remaining_requests = quota.rpd_limit
+  const remaining_requests = quota.rpd_limit != null
     ? Math.max(0, quota.rpd_limit - quota.used_requests_today)
     : null;
 
-  return c.json({ valid: true, quota, remaining_tokens, remaining_requests });
+  return c.json({ valid: true, unlimited: quota.rpm_limit == null && quota.rpd_limit == null && quota.daily_token_limit == null, quota, remaining_tokens, remaining_requests });
 });
 
 
@@ -1962,6 +1965,11 @@ app.post('/api/quota/consume', async (c) => {
     return c.json({ success: true, test_session: true });
   }
 
+  const quota: any = await c.env.DB.prepare('SELECT rpm_limit, rpd_limit, daily_token_limit FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(uuid, app_id).first();
+  if (!quota) return c.json({ error: 'Permission denied' }, 403);
+  if ([quota.rpm_limit, quota.rpd_limit, quota.daily_token_limit].some((limit) => limit !== null && limit !== undefined && Number(limit) === 0)) {
+    return c.json({ error: 'Quota is set to zero' }, 429);
+  }
   await c.env.DB.prepare('UPDATE user_apps SET used_tokens_today = used_tokens_today + ?, used_requests_today = used_requests_today + 1 WHERE uuid = ? AND app_id = ?').bind(tokens, uuid, app_id).run();
 
   c.env.ANALYTICS.writeDataPoint({
@@ -2846,6 +2854,8 @@ app.post('/admin/users', async (c) => {
   const birthday = body?.birthday || null;
   const avatarData = body?.avatar_data || null;
   if (!username || !name || !password) return c.json({ error: 'Username, full name, and password are required' }, 400);
+  const passwordError = passwordProblem(password);
+  if (passwordError) return c.json({ error: passwordError }, 400);
   const existingUser: any = await c.env.DB.prepare('SELECT uuid FROM users WHERE lower(username) = lower(?)').bind(username).first();
   if (existingUser) return c.json({ error: 'Username already exists' }, 409);
   const uuid = crypto.randomUUID();
@@ -2895,6 +2905,8 @@ app.put('/admin/users/:uuid', async (c) => {
 app.put('/admin/users/:uuid/password', async (c) => {
   const uuid = c.req.param('uuid');
   const { password } = await c.req.json();
+  const passwordError = passwordProblem(String(password || ''));
+  if (passwordError) return c.json({ error: passwordError }, 400);
   const salt = generateSalt();
   const hash = await hashPassword(password, salt);
   await c.env.DB.prepare(
@@ -3041,7 +3053,7 @@ function computePermissionCell(user: any, app: any, permission: any, threshold =
   const quotas = quotaPairs(permission || {});
   const finiteQuotas = quotas.filter((quota) => quota.limit !== null && quota.limit > 0 && quota.used !== null);
   const maxPercent = finiteQuotas.reduce((max, quota) => Math.max(max, Number(quota.used) / Number(quota.limit)), 0);
-  const exceeded = finiteQuotas.some((quota) => Number(quota.used) >= Number(quota.limit));
+  const exceeded = quotas.some((quota) => quota.limit === 0) || finiteQuotas.some((quota) => Number(quota.used) >= Number(quota.limit));
   const nearLimit = !exceeded && maxPercent >= threshold;
   const hasOverride = !!permission && [
     permission.rpm_limit,
@@ -3441,6 +3453,9 @@ app.delete('/admin/permissions', async (c) => {
 
 app.put('/admin/permissions/quota', async (c) => {
   const { uuid, app_id, rpm_limit, rpd_limit, daily_token_limit } = await c.req.json();
+  const rpmLimit = numberOrNull(rpm_limit);
+  const rpdLimit = numberOrNull(rpd_limit);
+  const dailyTokenLimit = numberOrNull(daily_token_limit);
   try {
     await c.env.DB.prepare(`
       INSERT INTO user_apps (uuid, app_id, enabled, role_in_app, rpm_limit, rpd_limit, daily_token_limit, quota_source, updated_at)
@@ -3452,7 +3467,7 @@ app.put('/admin/permissions/quota', async (c) => {
         daily_token_limit = excluded.daily_token_limit,
         quota_source = 'override',
         updated_at = CURRENT_TIMESTAMP
-    `).bind(uuid, app_id, rpm_limit || null, rpd_limit || null, daily_token_limit || null).run();
+    `).bind(uuid, app_id, rpmLimit, rpdLimit, dailyTokenLimit).run();
     await permissionAudit(c, 'admin_permission_quota_update', { target_user_id: uuid, target_app_id: app_id, rpm_limit, rpd_limit, daily_token_limit });
     return c.json({ success: true });
   } catch (e: any) {

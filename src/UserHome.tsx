@@ -1,4 +1,6 @@
 import React from 'react';
+import PasswordStrength from './PasswordStrength';
+import { passwordProblem } from './passwordPolicy';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -407,6 +409,8 @@ export default function UserHome() {
 
   const updatePassword = async (event: React.FormEvent) => {
     event.preventDefault();
+    const problem = passwordProblem(passwordForm.newPassword);
+    if (problem) { setMessage(problem); return; }
     if (passwordForm.newPassword !== passwordForm.confirm) {
       setMessage('Passwords do not match.');
       return;
@@ -850,6 +854,7 @@ export default function UserHome() {
             <form onSubmit={updatePassword} className="space-y-5">
               <Field label="New password">
                 <input type="password" value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} required />
+                <PasswordStrength password={passwordForm.newPassword} />
               </Field>
               <Field label="Confirm password">
                 <input type="password" value={passwordForm.confirm} onChange={(event) => setPasswordForm({ ...passwordForm, confirm: event.target.value })} required />

@@ -6,6 +6,8 @@ import { Routes, Route, useNavigate, Link, useLocation, Navigate } from 'react-r
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell, Legend } from 'recharts';
 import UserProfile from './UserProfile';
 import ChangePassword from './ChangePassword';
+import PasswordStrength from './PasswordStrength';
+import { passwordProblem } from './passwordPolicy';
 import AppDetails from './AppDetails';
 import AdminPasskeyManage from './AdminPasskeyManage';
 import UserPasskeyManage from './UserPasskeyManage';
@@ -325,6 +327,8 @@ function Dashboard() {
   // Quota Modal
   const [quotaModal, setQuotaModal] = useState<any>(null);
   const [passwordModal, setPasswordModal] = useState<any>(null);
+  const [createPasswordInput, setCreatePasswordInput] = useState('');
+  const [overwritePasswordInput, setOverwritePasswordInput] = useState('');
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
 
   // Stats state
@@ -620,6 +624,7 @@ function Dashboard() {
       if (!res.ok) throw new Error(data.error || 'Unable to create user');
       await fetchUsers();
       form.reset();
+      setCreatePasswordInput('');
     } catch (error: any) {
       alert(error.message || 'Unable to create user');
     }
@@ -630,6 +635,8 @@ function Dashboard() {
     const fd = new FormData(e.currentTarget);
     const password = String(fd.get('password') || '');
     if (!passwordModal?.uuid || !password) return;
+    const problem = passwordProblem(password);
+    if (problem) { alert(problem); return; }
     const res = await authFetch(`/admin/users/${passwordModal.uuid}/password`, {
       method: 'PUT',
       body: JSON.stringify({ password })
@@ -694,9 +701,7 @@ function Dashboard() {
     const fd = new FormData(form);
     const rpm = parseLimit(fd.get('rpm_limit'));
     const rpd = parseLimit(fd.get('rpd_limit'));
-    const tokenK = parseLimit(fd.get('daily_token_limit_k'));
-    // convert k → raw tokens
-    const dailyTokenLimit = tokenK !== null ? tokenK * 1000 : null;
+    const dailyTokenLimit = parseLimit(fd.get('daily_token_limit'));
 
     const res = await authFetch('/admin/permissions/quota', {
       method: 'PUT',
@@ -946,7 +951,8 @@ function Dashboard() {
                       <form onSubmit={createUser} className="space-y-4">
                         <input name="username" placeholder="Username" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
                         <input name="name" placeholder="Full Name" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
-                        <input name="password" type="password" placeholder="Password" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
+                        <input name="password" type="password" placeholder="Password" required value={createPasswordInput} onChange={(event) => setCreatePasswordInput(event.target.value)} className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all placeholder-white/30" />
+                        <PasswordStrength password={createPasswordInput} />
                         <DatePicker name="birthday" placeholder="Birthday" />
                         <label className="block rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-3 text-sm text-white/60">
                           Avatar (Optional)
@@ -1362,20 +1368,19 @@ function Dashboard() {
           {quotaModal ? (
             <>
               <h2 className="mb-1 text-2xl font-bold text-blue-300">Usage Limits</h2>
-              <p className="mb-6 border-b border-white/10 pb-4 text-sm text-white/50">Configure quota for {quotaModal.user_name} on {quotaModal.app_name}</p>
+              <p className="mb-6 border-b border-white/10 pb-4 text-sm text-white/50">Configure quota for {quotaModal.user_name} on {quotaModal.app_name}. Blank = unlimited; 0 = no usage.</p>
               <form onSubmit={updateQuota} className="space-y-4">
                 <div>
                   <label className="mb-1 block text-sm font-medium text-white/70">Requests Per Minute (RPM)</label>
-                  <input name="rpm_limit" type="number" defaultValue={quotaModal.rpm_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
+                  <input name="rpm_limit" type="number" min="0" step="1" defaultValue={quotaModal.rpm_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
                   <label className="mb-1 block text-sm font-medium text-white/70">Requests Per Day (RPD)</label>
-                  <input name="rpd_limit" type="number" defaultValue={quotaModal.rpd_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
+                  <input name="rpd_limit" type="number" min="0" step="1" defaultValue={quotaModal.rpd_limit ?? ''} placeholder="Unlimited" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-white/70">Tokens Per Day (k)</label>
-                  <input name="daily_token_limit_k" type="number" defaultValue={quotaModal.daily_token_limit != null ? Math.round(quotaModal.daily_token_limit / 1000) : ''} placeholder="Unlimited" min="0" step="1" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
-                  <p className="mt-1 text-xs text-white/30">Enter in thousands. e.g. 100 = 100k tokens/day</p>
+                  <label className="mb-1 block text-sm font-medium text-white/70">Tokens Per Day</label>
+                  <input name="daily_token_limit" type="number" defaultValue={quotaModal.daily_token_limit ?? ''} placeholder="Unlimited" min="0" step="1" className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div className="flex justify-end gap-3 pt-4">
                   <button type="button" onClick={() => setQuotaModal(null)} className="rounded-xl border border-white/10 px-5 py-2.5 transition-colors hover:bg-white/5">Cancel</button>
@@ -1390,7 +1395,8 @@ function Dashboard() {
               <form onSubmit={overwriteUserPassword} className="space-y-4">
                 <div>
                   <label className="mb-1 block text-sm font-medium text-white/70">New Password</label>
-                  <input name="password" type="text" required className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
+                  <input name="password" type="text" required value={overwritePasswordInput} onChange={(event) => setOverwritePasswordInput(event.target.value)} className="w-full rounded-xl border border-white/5 bg-black/30 px-4 py-3 outline-none transition-all placeholder-white/20 focus:ring-2 focus:ring-blue-500" />
+                  <PasswordStrength password={overwritePasswordInput} />
                 </div>
                 <div className="flex justify-end gap-3 pt-4">
                   <button type="button" onClick={() => setPasswordModal(null)} className="rounded-xl border border-white/10 px-5 py-2.5 transition-colors hover:bg-white/5">Cancel</button>

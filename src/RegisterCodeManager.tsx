@@ -199,7 +199,7 @@ export function openRegisterCodeDetails(record: RegisterCodeRecord) {
       app.textContent = String(permission.app_id || 'Unknown app');
       const quota = document.createElement('p');
       quota.className = 'mt-1 text-xs text-[var(--text-secondary)]';
-      quota.textContent = `RPM ${permission.rpm_limit || 'unlimited'} / RPD ${permission.rpd_limit || 'unlimited'} / Tokens ${permission.daily_token_limit || 'unlimited'}`;
+      quota.textContent = `RPM ${permission.rpm_limit ?? 'unlimited'} / RPD ${permission.rpd_limit ?? 'unlimited'} / Daily tokens ${permission.daily_token_limit ?? 'unlimited'}`;
       item.append(app, quota);
       permissionsList.append(item);
     }
@@ -249,6 +249,7 @@ export default function RegisterCodeManager({
   const [defaultState, setDefaultState] = React.useState<Record<string, RegisterTemplateState>>({});
   const [defaultCookieExpiryDays, setDefaultCookieExpiryDays] = React.useState('7');
   const [externalRegistrationEnabled, setExternalRegistrationEnabled] = React.useState(true);
+  const [defaultConfigReady, setDefaultConfigReady] = React.useState(false);
   const [oauthThreshold, setOauthThreshold] = React.useState('3');
   const codesRef = React.useRef<RegisterCodeRecord[]>([]);
   useBodyScrollLock(Boolean(detailCode || inviteCode));
@@ -374,11 +375,13 @@ export default function RegisterCodeManager({
     }));
 
   const loadDefaultConfig = React.useCallback(async () => {
+    setDefaultConfigReady(false);
     try {
       const res = await authFetch('/admin/auth/default-registration-config');
       const data = await res.json();
-      if (!res.ok) return;
+      if (!res.ok) throw new Error('Unable to load registration settings.');
       setExternalRegistrationEnabled(data.external_registration_enabled !== false);
+      setDefaultConfigReady(true);
       setOauthThreshold(String(data.oauth_turnstile_threshold_per_ip_hour ?? 3));
       setDefaultCookieExpiryDays(String(data.config?.cookie_expiry_days || 7));
       const permissions = Array.isArray(data.config?.permissions) ? data.config.permissions : [];
@@ -396,12 +399,12 @@ export default function RegisterCodeManager({
         return next;
       });
     } catch {
-      // The register-code page can still work if this newer endpoint is unavailable.
+      setError('Unable to load registration settings. Refresh to retry.');
     }
   }, [authFetch, apps]);
 
   React.useEffect(() => {
-    if (apps.length) void loadDefaultConfig();
+    void loadDefaultConfig();
   }, [apps.length, loadDefaultConfig]);
 
   const saveDefaultConfig = async () => {
@@ -532,15 +535,11 @@ export default function RegisterCodeManager({
             <h2 className="text-xl font-semibold text-[var(--text-primary)]">Default Registration</h2>
             <p className="mt-2 text-sm text-[var(--text-secondary)]">Applied once to new email, GitHub, and Google registrations without a register code.</p>
           </div>
-          <label className="ui-card-subtle flex items-center gap-3 px-4 py-3 text-sm font-medium text-[var(--text-primary)]">
-            <input
-              type="checkbox"
-              checked={externalRegistrationEnabled}
-              onChange={(event) => setExternalRegistrationEnabled(event.target.checked)}
-              className="h-4 w-4"
-            />
-            External registration
-          </label>
+          {defaultConfigReady ? <label className="ui-card-subtle flex items-center gap-3 px-4 py-3 text-sm font-medium text-[var(--text-primary)]">
+            <span>External registration</span>
+            <input type="checkbox" role="switch" checked={externalRegistrationEnabled} onChange={(event) => setExternalRegistrationEnabled(event.target.checked)} className="peer sr-only" />
+            <span aria-hidden="true" className="relative h-6 w-11 rounded-full bg-[var(--border)] transition-colors peer-checked:bg-[var(--primary)] peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--primary)] after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:after:translate-x-5" />
+          </label> : <span className="text-sm text-[var(--text-secondary)]">Loading registration settings...</span>}
         </div>
 
         <div className="mb-5 grid gap-4 sm:grid-cols-2">
@@ -548,6 +547,7 @@ export default function RegisterCodeManager({
           <label className="block space-y-2"><span className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">OAuth sign-ups per IP / hour before Turnstile</span><input type="number" min="0" max="1000" step="1" value={oauthThreshold} onChange={(event) => setOauthThreshold(event.target.value)} /></label>
         </div>
 
+        <p className="mb-3 text-xs text-[var(--text-secondary)]">RPM = requests/minute, RPD = requests/day, daily tokens are raw tokens. Blank = unlimited; 0 = no usage.</p>
         <div className="grid gap-4 lg:grid-cols-2">
           {apps.map((app) => {
             const value = defaultState[app.app_id] || { enabled: false, rpm_limit: '', rpd_limit: '', daily_token_limit: '' };
@@ -562,9 +562,9 @@ export default function RegisterCodeManager({
                     <p className="text-xs text-[var(--text-secondary)]">{app.app_id}</p>
                     {value.enabled ? (
                       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                        <input placeholder="RPM" value={value.rpm_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, rpm_limit: event.target.value } }))} />
-                        <input placeholder="RPD" value={value.rpd_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, rpd_limit: event.target.value } }))} />
-                        <input placeholder="Daily Tokens" value={value.daily_token_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, daily_token_limit: event.target.value } }))} />
+                        <input type="number" min="0" step="1" placeholder="RPM" value={value.rpm_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, rpm_limit: event.target.value } }))} />
+                        <input type="number" min="0" step="1" placeholder="RPD" value={value.rpd_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, rpd_limit: event.target.value } }))} />
+                        <input type="number" min="0" step="1" placeholder="Daily tokens" value={value.daily_token_limit} onChange={(event) => setDefaultState((current) => ({ ...current, [app.app_id]: { ...value, daily_token_limit: event.target.value } }))} />
                       </div>
                     ) : null}
                   </div>
@@ -574,7 +574,7 @@ export default function RegisterCodeManager({
           })}
         </div>
 
-        <button type="button" className="ui-button-primary mt-6" onClick={saveDefaultConfig} disabled={submitting}>
+        <button type="button" className="ui-button-primary mt-6" onClick={saveDefaultConfig} disabled={submitting || !defaultConfigReady}>
           Save Default Config
         </button>
       </div>
@@ -616,7 +616,7 @@ export default function RegisterCodeManager({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Permission Template</h3>
-              <span className="text-xs text-[var(--text-secondary)]">Select apps and optional quota values</span>
+              <span className="text-xs text-[var(--text-secondary)]">RPM: requests/min · RPD: requests/day · daily tokens: raw. Blank = unlimited; 0 = no usage.</span>
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
               {apps.map((app) => {
@@ -632,9 +632,9 @@ export default function RegisterCodeManager({
                         <p className="text-xs text-[var(--text-secondary)]">{app.app_id}</p>
                         {value.enabled ? (
                           <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                            <input placeholder="RPM" value={value.rpm_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, rpm_limit: event.target.value } }))} />
-                            <input placeholder="RPD" value={value.rpd_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, rpd_limit: event.target.value } }))} />
-                            <input placeholder="Daily Tokens" value={value.daily_token_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, daily_token_limit: event.target.value } }))} />
+                            <input type="number" min="0" step="1" placeholder="RPM" value={value.rpm_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, rpm_limit: event.target.value } }))} />
+                            <input type="number" min="0" step="1" placeholder="RPD" value={value.rpd_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, rpd_limit: event.target.value } }))} />
+                            <input type="number" min="0" step="1" placeholder="Daily tokens" value={value.daily_token_limit} onChange={(event) => setTemplateState((current) => ({ ...current, [app.app_id]: { ...value, daily_token_limit: event.target.value } }))} />
                           </div>
                         ) : null}
                       </div>

@@ -230,7 +230,7 @@ export default function AppDetails() {
                         {/* Chart Section */}
                         <div className="bg-white/5 backdrop-blur-lg border border-white/10 p-6 xl:p-8 rounded-3xl">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
-                                <h2 className="text-xl font-semibold flex items-center gap-2"><Activity className="w-5 h-5 text-emerald-400" /> Agent Usage Monitor (Tokens)</h2>
+                                <div><h2 className="text-xl font-semibold flex items-center gap-2"><Activity className="w-5 h-5 text-emerald-400" /> Agent Usage Monitor (Tokens)</h2><p className="mt-1 text-xs text-white/50">RPM: requests/min · RPD: requests/day · daily tokens: raw. Blank = unlimited; 0 = no usage.</p></div>
 
                                 <div className="flex items-center gap-3">
                                     <span className="text-sm text-white/50">Filter user:</span>
@@ -300,9 +300,9 @@ export default function AppDetails() {
                                     const u = users.find((u: any) => u.uuid === p.uuid);
                                     if (!u) return null;
 
-                                    const remainingTokens = p.daily_token_limit
+                                    const remainingTokens = p.daily_token_limit != null
                                         ? Math.max(0, p.daily_token_limit - (p.used_tokens_today || 0))
-                                        : 'Not Set';
+                                        : 'Unlimited';
 
                                     return (
                                         <div key={p.uuid} className="bg-black/30 border border-white/5 p-5 rounded-2xl flex justify-between items-center group hover:border-blue-500/30 transition-colors">

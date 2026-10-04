@@ -1,6 +1,8 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { Eye, EyeOff, KeyRound } from 'lucide-react';
+import PasswordStrength from './PasswordStrength';
+import { passwordProblem } from './passwordPolicy';
 import { Link, useParams } from 'react-router-dom';
 import {
   API_BASE,
@@ -23,6 +25,8 @@ export default function ChangePassword() {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    const problem = passwordProblem(newPassword);
+    if (problem) { setError(problem); return; }
     if (newPassword !== confirmPassword) {
       setError('The new passwords do not match.');
       return;
@@ -98,6 +102,7 @@ export default function ChangePassword() {
                   {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
+              <PasswordStrength password={newPassword} />
             </div>
 
             <div className="space-y-2">

@@ -6,6 +6,8 @@ import { AnimatePresence, motion } from 'motion/react';
 import { startAuthentication } from '@simplewebauthn/browser';
 import { ThemeToggle, useThemeMode } from './theme';
 import LegalFooter from './LegalFooter';
+import PasswordStrength from './PasswordStrength';
+import { passwordProblem } from './passwordPolicy';
 import './landing.css';
 
 const API_BASE = '';
@@ -260,15 +262,17 @@ export function EmailLoginPage() {
     fetch(`${API_BASE}/api/auth/session/continue`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ app_id: appId, redirect_uri: redirectUri }), signal: controller.signal,
-    }).then((res) => res.ok ? res.json() : null).then((data) => {
-      if (!controller.signal.aborted && data?.redirect_to) window.location.replace(data.redirect_to);
+    }).then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => ({})) })).then(({ ok, data }) => {
+      if (controller.signal.aborted) return;
+      if (ok && data?.redirect_to) window.location.replace(data.redirect_to);
+      else if (!ok && typeof data?.error === 'string' && data.error.toLowerCase().includes('permission')) setMessage(data.error);
     }).catch(() => null);
     return () => controller.abort();
   }, [redirectUri, appId, returnTo]);
 
   React.useEffect(() => {
     const error = searchParams.get('error');
-    if (error) setMessage(error.replace(/_/g, ' '));
+    if (error) setMessage(error === 'account_paused' ? 'This account is paused or disabled.' : error === 'no_permission' ? 'You do not have permission to access this application.' : error.replace(/_/g, ' '));
   }, [searchParams]);
 
   React.useEffect(() => {
@@ -470,8 +474,20 @@ export function RegisterEmailPage() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    registrationDraft = { ...form, invite_token: inviteToken || undefined };
-    navigate('/welcomenewuser?channel=email');
+    const problem = passwordProblem(form.password);
+    if (problem) { setMessage(problem); return; }
+    if (/admin/i.test(form.username) || /admin/i.test(form.fullname)) { setMessage('Username and full name cannot contain admin.'); return; }
+    setLoading(true);
+    setMessage('');
+    try {
+      await apiPost('/api/auth/register/preflight', { ...form, invite_token: inviteToken || undefined });
+      registrationDraft = { ...form, invite_token: inviteToken || undefined };
+      navigate('/welcomenewuser?channel=email');
+    } catch (error: any) {
+      setMessage(error.message || 'Please check your registration details.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -487,7 +503,7 @@ export function RegisterEmailPage() {
         <Field label="Email"><input type="email" required readOnly={!!invitation} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field>
         <Field label="Username"><input required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></Field>
         <Field label="Full name"><input required value={form.fullname} onChange={(event) => setForm({ ...form, fullname: event.target.value })} /></Field>
-        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></Field>
+        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><PasswordStrength password={form.password} /></Field>
         <Field label="Register code"><input readOnly={!!invitation} value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Birthday"><input type="date" value={form.birthday} onChange={(event) => setForm({ ...form, birthday: event.target.value })} /></Field>
@@ -629,6 +645,8 @@ export function RegisterCodePage() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    const problem = passwordProblem(form.password);
+    if (problem) { setMessage(problem); return; }
     setLoading(true);
     setMessage('');
     try {
@@ -647,7 +665,7 @@ export function RegisterCodePage() {
     <AuthFrame title="Register code">
       <form onSubmit={submit} className="space-y-4">
         <Field label="Username"><input required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></Field>
-        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></Field>
+        <Field label="Password"><input type="password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><PasswordStrength password={form.password} /></Field>
         <Field label="Confirm password"><input type="password" required value={form.confirm_password} onChange={(event) => setForm({ ...form, confirm_password: event.target.value })} /></Field>
         <Field label="Register code"><input required value={form.register_code} onChange={(event) => setForm({ ...form, register_code: event.target.value })} /></Field>
         <TurnstileBox siteKey={rules?.turnstile_site_key} onToken={setTurnstile} resetSignal={turnstileReset} />
@@ -752,6 +770,8 @@ export function ResetPasswordPage() {
     event.preventDefault();
     setLoading(true);
     try {
+      const problem = passwordProblem(newPassword);
+      if (problem) throw new Error(problem);
       const data = await apiPost('/api/auth/password/reset', { token: searchParams.get('token'), new_password: newPassword, confirm_password: confirm });
       setMessage(data.message);
     } catch (error: any) {
@@ -763,7 +783,7 @@ export function ResetPasswordPage() {
   return (
     <AuthFrame title="New password">
       <form onSubmit={submit} className="space-y-4">
-        <Field label="New password"><input type="password" required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field>
+        <Field label="New password"><input type="password" required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><PasswordStrength password={newPassword} /></Field>
         <Field label="Confirm password"><input type="password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} /></Field>
         <button className="ui-button-primary w-full" disabled={loading}>{loading ? 'Saving...' : 'Save password'}</button>
       </form>
@@ -804,6 +824,8 @@ export function AccountSecurityPage() {
   const changePassword = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
+      const problem = passwordProblem(passwordForm.new_password);
+      if (problem) throw new Error(problem);
       const data = await apiPost(user?.has_password === false ? '/api/account/password/set' : '/api/account/password/change', passwordForm);
       setMessage(data.message);
       setPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
@@ -879,7 +901,7 @@ export function AccountSecurityPage() {
             <form onSubmit={changePassword} className="space-y-4">
               <h2 className="text-lg font-semibold">Password</h2>
               {user.has_password !== false ? <Field label="Old password"><input type="password" value={passwordForm.old_password} onChange={(event) => setPasswordForm({ ...passwordForm, old_password: event.target.value })} /></Field> : null}
-              <Field label="New password"><input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /></Field>
+              <Field label="New password"><input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /><PasswordStrength password={passwordForm.new_password} /></Field>
               <Field label="Confirm password"><input type="password" value={passwordForm.confirm_password} onChange={(event) => setPasswordForm({ ...passwordForm, confirm_password: event.target.value })} /></Field>
               <button className="ui-button-primary w-full">{user.has_password === false ? 'Add password' : 'Update password'}</button>
             </form>

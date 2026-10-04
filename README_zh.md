@@ -294,7 +294,16 @@ npx wrangler deploy
 
 `/dev/docs` 在 Vite 构建时自动收录 `Subapp-Docs子应用配置文档/` 目录下的**全部 Markdown 文件**；`/user/docs` 直接读取 `docs/user-guide.md`。仓库文件是唯一内容来源，新增、删除或修改文档后，**下一次构建并部署**即可同步网页，无需再手工维护一份页面内容。页面展示以台北时区计算的构建日期；每份文档另显示自身的“更新时间”，修订文档时也应更新该日期。仅修改本地文件不会自动改变线上 Worker。旧指南继续可查阅，但新子应用请优先使用注明日期的统一登录指南。
 
-`.github/workflows/publish-docs.yml` 会在文档源码推送到 `master` 时自动构建并部署。启用前须在 GitHub 仓库配置 `CLOUDFLARE_API_TOKEN`（具备此 Worker 的部署权限）和 `CLOUDFLARE_ACCOUNT_ID` 两个仓库密钥。其他分支上的修改或未推送的本地修改，仍需合并并推送到 `master`，或执行上面的手动部署命令。
+`.github/workflows/publish-docs.yml` 会在文档或隐私政策源码推送到 `master` 时构建并部署；也可在 **Actions > Publish online documentation > Run workflow** 手动运行。先在 **GitHub 仓库 > Settings > Secrets and variables > Actions > New repository secret** 新建两个仓库级 Actions 密钥：
+
+1. `CLOUDFLARE_API_TOKEN`：在 Cloudflare 创建账号 API Token，选 **Edit Cloudflare Workers**，或给现有 Auth Center Worker 授予 Workers Editor，并将资源限定到正确账号。如果部署会修改路由或自定义域，还需对应 Zone 的 **Workers Routes > Write**。不要把 Token 提交到仓库。
+2. `CLOUDFLARE_ACCOUNT_ID`：此 Worker 所在的 Cloudflare **账号 ID**，不是 Zone ID。
+
+保存两项后重新运行 Action；缺失时会在 Wrangler 前给出明确错误。此 Action 会部署**整个 Worker 与前端构建产物**，不只是文档或隐私页，因此触发前需检查 `master` 上的其他改动。其他分支或尚未推送的本地改动不会自动上线。Worker 运行时的 JWT、OAuth、Turnstile 等密钥与 GitHub Actions 密钥是两套配置。
+
+安全前置：不要把 `JWT_SECRET`、`GITHUB_CLIENT_SECRET`、`CF_API_TOKEN` 等凭据放在受 Git 跟踪的 `wrangler.toml` 的 `[vars]` 中。应通过 `npx wrangler secret put <NAME>` 或 Worker 控制台的 Variables and Secrets 保存运行时密钥，并轮换曾提交到 Git 的值。GitHub Actions 部署 Token 与 Worker 运行时使用的 `CF_API_TOKEN` 不是同一个配置。
+
+注册和修改密码显示低、中、高三档强度与三段进度条，至少需字母、数字且达到中等强度；邮箱注册在进入 Turnstile 页面前预检邮箱、名称、密码和选填注册码，并在最终提交时复核。GitHub/Google 新账号可能将提供商头像复制到 R2；已有账号头像不变，用户可更换或恢复默认。额度单位统一为 RPM（每分钟请求）、RPD（每日请求）、每日原始 token 数；留空表示无限，`0` 表示额度为零。
 
 ## 常用验证
 

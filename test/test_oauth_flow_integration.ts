@@ -35,14 +35,20 @@ const env: any = {
   MAX_GLOBAL_REGISTRATIONS_PER_DAY: '100', MAX_REGISTRATIONS_PER_IP_PER_HOUR: '3', MAX_REGISTRATIONS_PER_IP_PER_DAY: '5',
   ADMIN_USERNAME: 'admin',
 };
+const avatarObjects = new Map<string, Uint8Array>();
+env.AVATAR_BUCKET = {
+  async put(key: string, bytes: Uint8Array) { avatarObjects.set(key, bytes); },
+  async delete(key: string) { avatarObjects.delete(key); },
+};
 let providerId = 42;
 let providerEmail = 'Alice@GMAIL.COM';
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input: any) => {
   const url = String(input);
+  if (url.startsWith('https://avatars.githubusercontent.com/')) return new Response(new Uint8Array(256), { headers: { 'content-type': 'image/png' } });
   if (url.includes('github.com/login/oauth/access_token')) return Response.json({ access_token: 'access-token' });
   if (url.includes('api.github.com/user/emails')) return Response.json([{ email: providerEmail, primary: true, verified: true }]);
-  if (url.includes('api.github.com/user')) return Response.json({ id: providerId, login: 'alice', name: 'Alice', avatar_url: null });
+  if (url.includes('api.github.com/user')) return Response.json({ id: providerId, login: 'alice', name: 'Alice', avatar_url: `https://avatars.githubusercontent.com/u/${providerId}` });
   throw new Error(`Unexpected upstream request: ${url}`);
 };
 try {
@@ -64,10 +70,13 @@ try {
   assert.equal(complete.status, 200, JSON.stringify(result));
   assert.equal(result.ok, true);
   assert.match(result.redirect_to, /^\/user\//);
-  const created: any = sqlite.prepare('SELECT email, role, auth_provider FROM users LIMIT 1').get();
+  const created: any = sqlite.prepare('SELECT email, role, auth_provider, avatar_key, avatar_original_key FROM users LIMIT 1').get();
   assert.equal(created.email, 'alice@gmail.com');
   assert.equal(created.role, 'user');
   assert.equal(created.auth_provider, 'github');
+  assert.equal(created.avatar_key, created.avatar_original_key);
+  assert.ok(avatarObjects.has(created.avatar_key));
+  assert.match((await verifyJWT(result.token, env.JWT_SECRET)).avatar_url, /\/api\/avatar\//);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS count FROM registration_events').get() as any).count, 1);
   const adminToken = await generateJWT({ sub: 'admin', uuid: 'admin', role: 'admin' }, env.JWT_SECRET, 1);
   const statsResponse = await worker.fetch(new Request('https://accounts.aryuki.com/admin/stats/external-registrations?granularity=day', { headers: { Authorization: `Bearer ${adminToken}` } }), env);
@@ -88,6 +97,8 @@ try {
   const linkedLogin = await callbackAgain(linked.state, linked.cookie);
   assert.equal(linkedLogin.status, 302);
   assert.match(linkedLogin.headers.get('location') || '', /^\/user\//);
+  assert.equal((sqlite.prepare('SELECT avatar_key FROM users WHERE email = ?').get('alice@gmail.com') as any).avatar_key, created.avatar_key);
+  assert.equal(avatarObjects.size, 1);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS count FROM registration_events').get() as any).count, 1);
 
   const createdUuid = (sqlite.prepare('SELECT uuid FROM users WHERE email = ?').get('alice@gmail.com') as any).uuid;

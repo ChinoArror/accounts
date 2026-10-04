@@ -349,6 +349,7 @@ export default function PermissionMatrix({ authFetch }: { authFetch: AuthFetch }
           <input type="number" min="0" value={form.daily_token_limit} onChange={(event) => setForm({ ...form, daily_token_limit: event.target.value })} placeholder="Unlimited" />
         </Field>
       </div>
+      <p className="text-xs text-[var(--text-secondary)]">RPM = requests/minute; RPD = requests/day; daily tokens are raw tokens. Blank = unlimited; 0 = no usage.</p>
       <Field label="Override reason">
         <input value={form.override_reason} onChange={(event) => setForm({ ...form, override_reason: event.target.value })} placeholder="Optional note" />
       </Field>

@@ -1,4 +1,5 @@
 import React from 'react';
+import PasswordStrength from './PasswordStrength';
 import { motion } from 'motion/react';
 import { CalendarDays, ImagePlus, KeyRound, Ticket, UserRound } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -120,6 +121,7 @@ export default function RegisterPage() {
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Password</label>
                 <input type="password" value={form.password} onChange={(event) => updateField('password', event.target.value)} required autoComplete="new-password" />
+                <PasswordStrength password={form.password} />
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">Birthday (Optional)</label>

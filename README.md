@@ -290,7 +290,16 @@ npx wrangler deploy
 
 `/dev/docs` imports every Markdown file in `Subapp-Docs子应用配置文档/` during the Vite build. `/user/docs` imports `docs/user-guide.md`. These files are the only content sources: adding, deleting, or editing a guide is reflected automatically in the **next build and deployment**, without editing a second online copy. The pages show the deployment build date (Asia/Taipei); each guide also shows its own `更新时间`/`更新` date. Update that date when revising a guide. Local edits alone cannot change the live Worker. The older guides remain available, but new subapps should start with the dated unified-login guide.
 
-`.github/workflows/publish-docs.yml` builds and deploys automatically when documentation sources are pushed to `master`. Before relying on this, configure the GitHub repository secrets `CLOUDFLARE_API_TOKEN` (a token authorized to deploy this Worker) and `CLOUDFLARE_ACCOUNT_ID`. Changes on other branches or unpushed local edits still require a merge/push to `master` or a manual deployment with the commands above.
+`.github/workflows/publish-docs.yml` builds and deploys when documentation or privacy-policy sources are pushed to `master`; you can also use **Actions > Publish online documentation > Run workflow**. Configure these **repository Actions secrets** under **GitHub > Settings > Secrets and variables > Actions > New repository secret**:
+
+1. `CLOUDFLARE_API_TOKEN`: create an Account API token in Cloudflare with **Edit Cloudflare Workers** (or Workers Editor scoped to the existing Auth Center Worker). Scope it to the correct account; if deployment changes a route/custom domain, also grant Zone > Workers Routes > Write for that zone. Never commit the token.
+2. `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account ID containing this Worker (not a zone ID).
+
+Re-run the workflow after saving both secrets. The job checks for missing values before invoking Wrangler. This Action deploys the **entire Worker and frontend bundle**, not only the Markdown or privacy page; review other changes on `master` before triggering it. A push to a different branch or an unpushed local edit will not change the live site. The Worker runtime secrets (JWT, OAuth, Turnstile, etc.) remain separate from these GitHub Actions secrets.
+
+Security prerequisite: keep `JWT_SECRET`, `GITHUB_CLIENT_SECRET`, `CF_API_TOKEN`, and any other credentials out of tracked `[vars]` in `wrangler.toml`. Store runtime credentials as Cloudflare Worker Secrets (`npx wrangler secret put <NAME>` or Worker Settings > Variables and Secrets), then rotate values previously committed to Git. A GitHub Actions deployment token is separate from `CF_API_TOKEN`, which the Worker uses at runtime.
+
+Registration/password forms show a three-level password meter; passwords require letters, numbers, and at least medium strength. Email registration validates the email, name, password, and optional code before the Turnstile step, then rechecks at submission. New GitHub/Google accounts may copy the provider avatar into R2; existing accounts are unchanged and users can replace or remove their avatar. Quotas use raw daily tokens, requests per minute (RPM), and requests per day (RPD): blank means unlimited, `0` means no usage.
 
 ## Useful Verification
 

@@ -3,6 +3,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { generateSalt, generateJWT, verifyJWT } from './auth';
 import { durableSessionActive, issueDurableSession } from './durableSession';
 import { isAllowedOAuthRedirect } from './oauthFlow';
+import { passwordProblem } from './passwordPolicy';
 
 type Ctx = any;
 
@@ -107,12 +108,6 @@ function csvList(value: unknown) {
     .filter(Boolean);
 }
 
-function passwordProblem(password: string) {
-  if (password.length < 8) return '密码至少需要 8 位，并包含字母和数字。';
-  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return '密码至少需要包含字母和数字。';
-  return '';
-}
-
 function publicRegistrationRules(c: Ctx) {
   const mode = (envString(c, 'REGISTRATION_MODE', 'open') as RegistrationMode) || 'open';
   const start = envString(c, 'REGISTRATION_START_AT');
@@ -214,9 +209,9 @@ function normalizePermissionConfig(input: any) {
   const permissions = Array.isArray(input?.permissions)
     ? input.permissions.map((permission: any) => ({
       app_id: String(permission?.app_id || '').trim(),
-      rpm_limit: permission?.rpm_limit === '' || permission?.rpm_limit === undefined ? null : Number(permission.rpm_limit),
-      rpd_limit: permission?.rpd_limit === '' || permission?.rpd_limit === undefined ? null : Number(permission.rpd_limit),
-      daily_token_limit: permission?.daily_token_limit === '' || permission?.daily_token_limit === undefined ? null : Number(permission.daily_token_limit),
+      rpm_limit: permission?.rpm_limit == null || permission?.rpm_limit === '' ? null : Number(permission.rpm_limit),
+      rpd_limit: permission?.rpd_limit == null || permission?.rpd_limit === '' ? null : Number(permission.rpd_limit),
+      daily_token_limit: permission?.daily_token_limit == null || permission?.daily_token_limit === '' ? null : Number(permission.daily_token_limit),
     })).filter((permission: any) => permission.app_id)
     : [];
   return {
@@ -860,6 +855,36 @@ async function resolveRegisterInvite(c: Ctx, value: string) {
 export function registerEmailAuthFeature(app: Hono<any>) {
   app.get('/api/auth/registration/rules', async (c) => c.json({ ok: true, rules: await publicRegistrationRulesAsync(c) }));
 
+  app.post('/api/auth/register/preflight', async (c) => {
+    const body: any = await c.req.json().catch(() => ({}));
+    const ip = await ipHash(c);
+    if (!(await incrementCounter(c, 'register_preflight_ip_hour', ip, 3600000, 30))) {
+      return c.json({ ok: false, message: 'Too many attempts. Please try later.' }, 429);
+    }
+    const inviteValue = String(body.invite_token || '').trim();
+    const invitation = inviteValue ? await resolveRegisterInvite(c, inviteValue) : null;
+    if (inviteValue && !invitation) return c.json({ ok: false, message: 'This invitation is invalid or has expired.' }, 410);
+    if (!invitation && !(await externalRegistrationEnabled(c))) return c.json({ ok: false, message: 'External registration is closed.' }, 403);
+    if (!invitation && !publicRegistrationRules(c).email_registration_allowed) return c.json({ ok: false, message: 'Public registration is closed.' }, 403);
+    const email = invitation?.email || normalizeEmail(body.email);
+    const username = String(body.username || '').trim();
+    const fullName = String(body.fullname || '').trim();
+    const passError = passwordProblem(String(body.password || ''));
+    if (!email || !username || !fullName) return c.json({ ok: false, message: 'Please complete the required fields.' }, 400);
+    if (containsAdmin(username) || containsAdmin(fullName)) return c.json({ ok: false, message: 'Username and full name cannot contain admin.' }, 400);
+    if (passError) return c.json({ ok: false, message: passError }, 400);
+    const domainError = assertEmailDomain(c, email);
+    if (domainError) return c.json({ ok: false, message: domainError }, 400);
+    const existing: any = await c.env.DB.prepare('SELECT username, email FROM users WHERE lower(username) = lower(?) OR lower(email) = ? LIMIT 1').bind(username, email).first();
+    if (existing?.email && normalizeEmail(existing.email) === email) return c.json({ ok: false, message: 'Email is already in use.' }, 409);
+    if (existing) return c.json({ ok: false, message: 'Username is already in use.' }, 409);
+    const registerCode = invitation?.code || String(body.register_code || '').trim();
+    if (registerCode && !invitation && registerCodeUnavailable(await findRegisterCode(c, registerCode))) {
+      return c.json({ ok: false, message: 'Register code is invalid.' }, 400);
+    }
+    return c.json({ ok: true });
+  });
+
   app.get('/api/auth/register/invite', async (c) => {
     const invitation = await resolveRegisterInvite(c, String(c.req.query('token') || ''));
     if (!invitation) return c.json({ ok: false, message: 'This invitation is invalid or has expired.' }, 410);
@@ -1192,7 +1217,7 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       ? await findUserByEmail(c, email)
       : await c.env.DB.prepare('SELECT * FROM users WHERE lower(username) = ? OR lower(name) = ? LIMIT 1').bind(identifier.toLowerCase(), identifier.toLowerCase()).first();
     const userId = user?.uuid || user?.id || null;
-    if (!user || !['active'].includes(user.status) || (email && !user.email_verified)) {
+    if (!user) {
       await logAudit(c, 'login_failed', false, { method: 'email' }, userId);
       return c.json({ ok: false, message: generic }, 401);
     }
@@ -1209,6 +1234,16 @@ export function registerEmailAuthFeature(app: Hono<any>) {
       await c.env.DB.prepare('UPDATE user_credentials SET failed_login_count = ?, locked_until = ? WHERE user_id = ?').bind(failedCount, lockedUntil, user.uuid || user.id).run();
       await logAudit(c, failedCount >= 5 ? 'account_locked' : 'login_failed', false, { method: 'email', failed_count: failedCount }, user.uuid || user.id);
       return c.json({ ok: false, message: generic, require_turnstile: failedCount >= 5 }, 401);
+    }
+    if (user.status !== 'active') {
+      const message = user.status === 'paused' || user.status === 'disabled' ? 'This account is paused or disabled.' : user.status === 'pending' ? 'Please verify your email before signing in.' : 'This account is unavailable.';
+      await logAudit(c, 'login_failed', false, { method: 'email', reason: user.status }, userId);
+      return c.json({ ok: false, message }, 403);
+    }
+    if (email && !user.email_verified) return c.json({ ok: false, message: 'Please verify your email before signing in.' }, 403);
+    if (body.app_id && body.app_id !== 'auth-center' && user.role !== 'admin') {
+      const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(user.uuid || user.id, body.app_id).first();
+      if (!permission) return c.json({ ok: false, message: 'You do not have permission to access this application.' }, 403);
     }
     await c.env.DB.prepare('UPDATE user_credentials SET failed_login_count = 0, locked_until = NULL WHERE user_id = ?').bind(user.uuid || user.id).run();
     const { token } = await createSessionAndJwt(c, user, body.app_id || 'auth-center');
@@ -1248,7 +1283,13 @@ export function registerEmailAuthFeature(app: Hono<any>) {
     const token = await consumeToken(c, 'login_otp', code, email);
     if (!token) return c.json({ ok: false, message: generic }, 401);
     const user: any = await findUserByUuid(c, token.user_id);
-    if (!user || user.status !== 'active' || !user.email_verified) return c.json({ ok: false, message: generic }, 401);
+    if (!user) return c.json({ ok: false, message: generic }, 401);
+    if (user.status !== 'active') return c.json({ ok: false, message: user.status === 'paused' || user.status === 'disabled' ? 'This account is paused or disabled.' : 'This account is unavailable.' }, 403);
+    if (!user.email_verified) return c.json({ ok: false, message: 'Please verify your email before signing in.' }, 403);
+    if (body.app_id && body.app_id !== 'auth-center' && user.role !== 'admin') {
+      const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(user.uuid || user.id, body.app_id).first();
+      if (!permission) return c.json({ ok: false, message: 'You do not have permission to access this application.' }, 403);
+    }
     const session = await createSessionAndJwt(c, user, body.app_id || 'auth-center');
     await logAudit(c, 'login_otp_success', true, {}, user.uuid || user.id);
     return redirectOrJson(c, body.redirect_uri, session.token, user.role === 'admin' ? '/dash' : `/user/${user.uuid || user.id}`, body.app_id);
