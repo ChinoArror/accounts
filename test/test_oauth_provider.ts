@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { githubProfile, googleProfile, googleAuthorizeUrl } from './src/oauthProviders';
+import { githubProfile, googleProfile, googleAuthorizeUrl } from '../src/oauthProviders';
 
 assert.deepEqual(githubProfile({ id: 42, login: 'alice', name: 'Alice', avatar_url: 'https://avatars.githubusercontent.com/u/42' }, [
   { email: 'other@example.com', primary: false, verified: true },

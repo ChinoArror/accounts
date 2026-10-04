@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { oauthDecision, oauthHourBucket, safeOAuthName } from './src/oauthPolicy';
+import { oauthDecision, oauthHourBucket, safeOAuthName } from '../src/oauthPolicy';
 
 assert.equal(oauthDecision({ linked: true, status: 'active', emailOwnerStatus: null, externalOpen: false }), 'login');
 assert.equal(oauthDecision({ linked: false, status: null, emailOwnerStatus: 'active', externalOpen: false }), 'link_existing');

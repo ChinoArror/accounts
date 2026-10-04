@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { isAllowedOAuthRedirect, registrationChallengeRequired } from './src/oauthFlow';
+import { isAllowedOAuthRedirect, registrationChallengeRequired } from '../src/oauthFlow';
 
 assert.equal(isAllowedOAuthRedirect('https://app.example.com/callback', 'https://app.example.com/callback?from=home'), true);
 assert.equal(isAllowedOAuthRedirect('https://app.example.com/callback', 'https://evil.example.com/callback'), false);

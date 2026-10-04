@@ -4,7 +4,7 @@ import {
   expandPreviewApps,
   normalizePreviewEnabled,
   previewSessionExpiresAt,
-} from './src/testPreview';
+} from '../src/testPreview';
 
 assert.equal(normalizePreviewEnabled(true), true);
 assert.equal(normalizePreviewEnabled(1), true);

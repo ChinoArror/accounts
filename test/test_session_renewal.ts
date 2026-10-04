@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import worker from './src/index';
-import { generateJWT, generateSalt, hashPassword, verifyJWT } from './src/auth';
+import worker from '../src/index';
+import { generateJWT, generateSalt, hashPassword, verifyJWT } from '../src/auth';
 
 const sqlite = new DatabaseSync(':memory:');
-sqlite.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
+sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
 const db = {
   prepare(sql: string) {
     let args: any[] = [];

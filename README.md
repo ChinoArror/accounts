@@ -232,17 +232,17 @@ npx wrangler d1 execute auth-center-db --remote --file=./schema.sql
 Existing database migrations used by recent updates:
 
 ```bash
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-email-auth-2026-05-30.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-auth-settings-2026-05-30.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-sessions.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-register-codes.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-user-avatar-r2.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-permission-matrix-2026-05-31.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-avatar-editor-2026-06-20.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-test-identity-preview-2026-09-19.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-external-registration-2026-09-29.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-session-and-oauth-cleanup-2026-09-30.sql
-npx wrangler d1 execute auth-center-db --remote --file=./migrate-oauth-binding-details-2026-09-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-email-auth-2026-05-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-auth-settings-2026-05-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-user-sessions.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-register-codes.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-user-avatar-r2.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-permission-matrix-2026-05-31.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-avatar-editor-2026-06-20.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-test-identity-preview-2026-09-19.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-oauth-external-registration-2026-09-29.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-session-and-oauth-cleanup-2026-09-30.sql
+npx wrangler d1 execute auth-center-db --remote --file=./test/migration/migrate-oauth-binding-details-2026-09-30.sql
 ```
 
 `schema.sql` contains `DROP TABLE` statements and is **only** for a fresh disposable database. Run each migration once on an existing D1. The 2026-09-29 OAuth migration must not be rerun after the 2026-09-30 binding cleanup, or its legacy GitHub backfill will recreate links.

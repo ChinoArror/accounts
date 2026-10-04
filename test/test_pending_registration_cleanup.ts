@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { cleanupExpiredPendingRegistrations } from './src/emailAuthFeature';
+import { cleanupExpiredPendingRegistrations } from '../src/emailAuthFeature';
 
 class D1Statement {
   private values: unknown[] = [];

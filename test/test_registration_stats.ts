@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildRegistrationSeries, parseRegistrationRange } from './src/registrationStats';
+import { buildRegistrationSeries, parseRegistrationRange } from '../src/registrationStats';
 
 const range = parseRegistrationRange('day', '2026-09-29', '2026-09-30');
 assert.equal(range?.granularity, 'day');

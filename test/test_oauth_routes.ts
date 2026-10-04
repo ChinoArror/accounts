@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import worker from './src/index';
+import worker from '../src/index';
 
 const env: any = { JWT_SECRET: 'local-test-secret', GITHUB_CLIENT_ID: 'github-id', GITHUB_CLIENT_SECRET: 'github-secret', GOOGLE_CLIENT_ID: 'REPLACE_GOOGLE_CLIENT_ID' };
 const config = await worker.fetch(new Request('https://accounts.aryuki.com/api/auth/oauth/config'), env);

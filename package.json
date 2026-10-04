@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:oauth": "tsx test_oauth_registration_policy.ts && tsx test_oauth_provider.ts && tsx test_google_oidc.ts && tsx test_oauth_sso_policy.ts && tsx test_registration_stats.ts && tsx test_oauth_migration.ts && tsx test_oauth_routes.ts && tsx test_oauth_flow_integration.ts"
+    "test:oauth": "tsx test/test_oauth_registration_policy.ts && tsx test/test_oauth_provider.ts && tsx test/test_google_oidc.ts && tsx test/test_oauth_sso_policy.ts && tsx test/test_registration_stats.ts && tsx test/test_oauth_migration.ts && tsx test/test_oauth_routes.ts && tsx test/test_oauth_flow_integration.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

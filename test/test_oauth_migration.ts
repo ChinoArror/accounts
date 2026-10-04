@@ -9,7 +9,7 @@ CREATE TABLE auth_audit_logs (user_id TEXT, event_type TEXT, success INTEGER, cr
 INSERT INTO users VALUES ('u1', '42', 'email');
 INSERT INTO users VALUES ('u2', NULL, 'sso');
 INSERT INTO auth_audit_logs VALUES ('u1', 'register_email_success', 1, '2026-09-20T00:00:00Z');`);
-const sql = readFileSync(new URL('./migrate-oauth-external-registration-2026-09-29.sql', import.meta.url), 'utf8');
+const sql = readFileSync(new URL('./migration/migrate-oauth-external-registration-2026-09-29.sql', import.meta.url), 'utf8');
 db.exec(sql);
 assert.deepEqual({ ...db.prepare('SELECT provider, provider_subject, user_uuid FROM oauth_identities').get() }, { provider: 'github', provider_subject: '42', user_uuid: 'u1' });
 assert.equal((db.prepare('SELECT COUNT(*) AS count FROM registration_events').get() as any).count, 1);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { registerCodeUnavailable, registerInviteExpiry } from './src/emailAuthFeature';
+import { registerCodeUnavailable, registerInviteExpiry } from '../src/emailAuthFeature';
 
 assert.equal(
   registerInviteExpiry(Date.parse('2026-08-02T12:00:00.000Z')),

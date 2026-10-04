@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const appSource = readFileSync(new URL('./src/App.tsx', import.meta.url), 'utf8');
-const accessSource = readFileSync(new URL('./src/TestAccess.tsx', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const accessSource = readFileSync(new URL('../src/TestAccess.tsx', import.meta.url), 'utf8');
 
 assert.match(appSource, /import \{ TestIdentityPreview \} from '\.\/TestIdentityPreview'/);
 assert.match(appSource, /<Route path="\/preview" element=\{<TestIdentityPreview \/>\} \/>/);
@@ -11,8 +11,8 @@ assert.match(accessSource, /preview_enabled/);
 assert.match(accessSource, /preview_url/);
 assert.match(accessSource, /Preview link/);
 
-const previewSource = readFileSync(new URL('./src/TestIdentityPreview.tsx', import.meta.url), 'utf8');
-const styleSource = readFileSync(new URL('./src/index.css', import.meta.url), 'utf8');
+const previewSource = readFileSync(new URL('../src/TestIdentityPreview.tsx', import.meta.url), 'utf8');
+const styleSource = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 assert.match(previewSource, /preview-redline-shell/);
 assert.match(previewSource, /preview-command-mark/);
 assert.match(previewSource, /preview-launch-core/);

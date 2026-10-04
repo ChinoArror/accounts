@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const workerSource = readFileSync(new URL('./src/index.ts', import.meta.url), 'utf8');
-const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
+const workerSource = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+const schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
 
 assert.match(schema, /preview_enabled INTEGER NOT NULL DEFAULT 0/);
 assert.match(workerSource, /app\.post\('\/preview\/api\/session'/);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { exchangeGoogle } from './src/oauthProviders';
+import { exchangeGoogle } from '../src/oauthProviders';
 
 const { privateKey, publicKey } = await generateKeyPair('RS256');
 const jwk = { ...await exportJWK(publicKey), kid: 'test-key', use: 'sig', alg: 'RS256' };
