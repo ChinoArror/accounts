@@ -1450,6 +1450,7 @@ export default function App() {
       <Route path="/" element={<LandingPage />} />
       <Route path="/dash" element={<Dashboard />} />
       <Route path="/dev/docs" element={<SubappDocsPage />} />
+      <Route path="/dev/docs/:docSlug" element={<SubappDocsPage />} />
       <Route path="/dev/:name" element={<TestIdentityDevPage />} />
       <Route path="/preview" element={<TestIdentityPreview />} />
       <Route path="/admin/passkey" element={<AdminPasskeyManage />} />

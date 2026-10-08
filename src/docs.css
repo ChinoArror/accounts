@@ -24,6 +24,11 @@
 .docs-empty { color: var(--text-tertiary); font-size: 13px; padding: 10px 12px; }
 .docs-article { min-width: 0; padding: 25px 0 70px 38px; }
 .docs-article-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--divider); color: var(--text-tertiary); font-size: 12px; }
+.docs-index-list { display: grid; }
+.docs-index-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 14px 4px; border-bottom: 1px solid var(--divider); color: var(--text-primary); font-size: 14px; line-height: 1.5; text-decoration: none; }
+.docs-index-row:hover { color: var(--primary); }
+.docs-index-row span { min-width: 0; overflow-wrap: anywhere; }
+.docs-index-row small { flex: none; color: var(--text-tertiary); font-size: 11px; }
 .docs-markdown { max-width: 820px; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; color: var(--text-secondary); }
 .docs-markdown > :first-child { margin-top: 0; }
 .docs-markdown h1,.docs-markdown h2,.docs-markdown h3,.docs-markdown h4 { color: var(--text-primary); line-height: 1.35; font-weight: 700; scroll-margin-top: 20px; }

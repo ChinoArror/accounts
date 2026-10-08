@@ -9,11 +9,14 @@ routes = [
 [assets]
 directory = "dist"
 binding = "ASSETS"
+run_worker_first = true
 
 [triggers]
 crons = ["*/15 * * * *"]
 
 [vars]
+SITE_URL = "https://accounts.aryuki.com"
+ENVIRONMENT = "production"
 ADMIN_USERNAME = "admin"
 CF_ACCOUNT_ID = "3903d3554a2e7453ce23f44bc989fe6b"
 GITHUB_CLIENT_ID = "Ov23liJvxA7wU7FRkMf7"

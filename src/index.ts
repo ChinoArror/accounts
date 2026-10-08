@@ -9,6 +9,7 @@ import { cleanupOAuthFlow, registerOAuthFlow, isAllowedOAuthRedirect } from './o
 import { clearSessionCookies, durableSessionActive, findRefreshSession, issueDurableSession, recordSessionApp, refreshSeconds, revokeDurableSession, rotateRefreshSession, setAccessCookie, accessSeconds } from './durableSession';
 import { buildRegistrationSeries, parseRegistrationRange } from './registrationStats';
 import { passwordProblem } from './passwordPolicy';
+import { buildCanonicalUrl, buildSitemapXml, classifyPublicPath, DEFAULT_SITE_URL, isKnownPrivatePath, normalizedPath, type SeoPage } from './seo';
 
 type D1Database = any;
 type AnalyticsEngineDataset = any;
@@ -64,6 +65,9 @@ type Bindings = {
   MAX_VERIFY_EMAILS_PER_EMAIL_PER_DAY?: string;
   ACCESS_TOKEN_TTL_SECONDS?: string;
   REFRESH_TOKEN_TTL_SECONDS?: string;
+  SITE_URL?: string;
+  ENVIRONMENT?: string;
+  GOOGLE_SITE_VERIFICATION?: string;
   NEAR_LIMIT_THRESHOLD?: string;
   ADMIN_COOKIE_EXPIRY_DAYS?: string;
 };
@@ -3580,12 +3584,89 @@ app.get('/admin/stats/usage', async (c) => {
   return c.json(data);
 });
 
-// Fallback for SPA Routing (React Router)
+function seoSiteUrl(c: any): string {
+  const configured = String(c.env.SITE_URL || c.env.PUBLIC_BASE_URL || DEFAULT_SITE_URL).trim();
+  const url = new URL(configured);
+  if (url.protocol !== 'https:') throw new Error('SITE_URL must be an HTTPS origin');
+  return url.origin;
+}
+
+async function seoPages(c: any): Promise<SeoPage[]> {
+  const response = await c.env.ASSETS.fetch('https://assets.local/_seo/manifest.json');
+  if (!response.ok) throw new Error('SEO manifest is missing; run npm run build before deploying');
+  return response.json();
+}
+
+function seoHeaders(contentType: string, production: boolean): Headers {
+  const headers = new Headers({ 'Content-Type': contentType, 'Cache-Control': 'public, max-age=300, s-maxage=3600' });
+  if (!production) headers.set('X-Robots-Tag', 'noindex, nofollow');
+  return headers;
+}
+
+app.get('/robots.txt', async (c) => {
+  const site = seoSiteUrl(c);
+  const production = c.env.ENVIRONMENT === 'production';
+  const content = production
+    ? `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${site}/sitemap.xml\n`
+    : `User-agent: *\nDisallow: /\n`;
+  return new Response(content, { headers: seoHeaders('text/plain; charset=utf-8', production) });
+});
+
+app.get('/sitemap.xml', async (c) => {
+  const production = c.env.ENVIRONMENT === 'production';
+  const pages = production ? await seoPages(c) : [];
+  return new Response(buildSitemapXml(seoSiteUrl(c), pages), {
+    headers: seoHeaders('application/xml; charset=utf-8', production),
+  });
+});
+
 app.get('*', async (c) => {
-  if (new URL(c.req.url).pathname.startsWith('/preview')) {
-    setPreviewResponseHeaders(c);
+  const url = new URL(c.req.url);
+  const path = normalizedPath(url.pathname);
+  if (path.startsWith('/assets/') || path.startsWith('/preview/') || path === '/auth-center-hero.webp') {
+    return c.env.ASSETS.fetch(new URL(path, 'https://assets.local').toString());
   }
-  return await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url).toString(), c.req.raw));
+  const production = c.env.ENVIRONMENT === 'production';
+  const site = seoSiteUrl(c);
+  if (production && !['localhost', '127.0.0.1'].includes(url.hostname) && url.origin !== site) {
+    return Response.redirect(`${site}${url.pathname}${url.search}`, 301);
+  }
+  if (url.pathname !== path || url.pathname === '/index.html') {
+    const target = url.pathname === '/index.html' ? '/' : path;
+    return Response.redirect(`${url.origin}${target}${url.search}`, 301);
+  }
+  if (path.startsWith('/_seo/')) return new Response('Not found', { status: 404, headers: { 'X-Robots-Tag': 'noindex' } });
+
+  const pages = await seoPages(c);
+  if (path === '/dev/docs' && url.searchParams.has('doc')) {
+    const doc = pages.find((page) => page.legacyFilename === url.searchParams.get('doc'));
+    return Response.redirect(`${url.origin}${doc?.path || '/dev/docs'}`, 301);
+  }
+  const page = classifyPublicPath(path, pages);
+  if (page?.asset) {
+    const asset = await c.env.ASSETS.fetch(`https://assets.local/_seo/${page.asset}.html`);
+    if (!asset.ok) return new Response('Public page unavailable', { status: 503, headers: { 'X-Robots-Tag': 'noindex' } });
+    let html = (await asset.text()).replaceAll(DEFAULT_SITE_URL, site);
+    const verification = String(c.env.GOOGLE_SITE_VERIFICATION || '').trim();
+    if (verification) html = html.replace('</head>', `<meta name="google-site-verification" content="${verification.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"></head>`);
+    return new Response(html, { headers: seoHeaders('text/html; charset=utf-8', production) });
+  }
+
+  if (isKnownPrivatePath(path)) {
+    if (path.startsWith('/preview')) setPreviewResponseHeaders(c);
+    const shell = await c.env.ASSETS.fetch('https://assets.local/');
+    const html = (await shell.text()).replace('</head>', '<meta name="robots" content="noindex,nofollow"></head>');
+    const headers = new Headers({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex, nofollow' });
+    if (path.startsWith('/preview')) {
+      headers.set('Pragma', 'no-cache');
+      headers.set('Referrer-Policy', 'no-referrer');
+      headers.set('X-Content-Type-Options', 'nosniff');
+    }
+    return new Response(html, { headers });
+  }
+
+  const missing = await c.env.ASSETS.fetch('https://assets.local/_seo/404.html');
+  return new Response(await missing.text(), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Robots-Tag': 'noindex, nofollow' } });
 });
 
 export default {

@@ -286,9 +286,15 @@ npm run build
 npx wrangler deploy
 ```
 
+### Search Engine Indexing
+
+`SITE_URL=https://accounts.aryuki.com` is the canonical production origin. The Worker serves `/robots.txt` and `/sitemap.xml`; only the public landing page, privacy policy, user guide, developer docs index, and current Markdown-based developer guides are included. `npm run build` pre-renders those React pages into first-response HTML and regenerates the sitemap manifest. New guides enter the sitemap automatically at the next build and deployment. Login, user, admin, API, preview, and test-identity pages are excluded and/or marked `noindex`.
+
+Set `ENVIRONMENT=production` only for the canonical deployment. Non-production deployments must use another value so public HTML receives `X-Robots-Tag: noindex`. Optional `GOOGLE_SITE_VERIFICATION` adds a Search Console verification meta tag; DNS Domain Property verification is recommended. Submit `https://accounts.aryuki.com/sitemap.xml` in Search Console and use URL Inspection for especially important new pages. Run `npm run test:seo`, then `npm run build`, then `npm run check:seo` against a local or deployed Worker. See [docs/SEO.md](docs/SEO.md) for full setup and limitations.
+
 ### Online Documentation
 
-`/dev/docs` imports every Markdown file in `Subapp-Docs子应用配置文档/` during the Vite build. `/user/docs` imports `docs/user-guide.md`. These files are the only content sources: adding, deleting, or editing a guide is reflected automatically in the **next build and deployment**, without editing a second online copy. The pages show the deployment build date (Asia/Taipei); each guide also shows its own `更新时间`/`更新` date. Update that date when revising a guide. Local edits alone cannot change the live Worker. The older guides remain available, but new subapps should start with the dated unified-login guide.
+`/dev/docs` imports every Markdown file in `Subapp-Docs子应用配置文档/` during the build and gives each guide its own `/dev/docs/<document-name>` page. `/user/docs` imports `docs/user-guide.md`. These files are the only content sources: adding, deleting, or editing a guide is reflected automatically in the **next build and deployment**, including the sitemap, without editing a second online copy. The pages show the deployment build date (Asia/Taipei); each guide also shows its own `更新时间`/`更新` date. Update that date when revising a guide. Local edits alone cannot change the live Worker. The older guides remain available, but new subapps should start with the dated unified-login guide.
 
 `.github/workflows/publish-docs.yml` builds and deploys when documentation or privacy-policy sources are pushed to `master`; you can also use **Actions > Publish online documentation > Run workflow**. Configure these **repository Actions secrets** under **GitHub > Settings > Secrets and variables > Actions > New repository secret**:
 

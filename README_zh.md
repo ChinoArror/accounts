@@ -290,9 +290,15 @@ npm run build
 npx wrangler deploy
 ```
 
+### 搜索引擎收录
+
+`SITE_URL=https://accounts.aryuki.com` 是生产规范域名。Worker 提供 `/robots.txt` 和 `/sitemap.xml`；sitemap 只收录公开首页、隐私政策、用户指南、开发者文档目录及现有 Markdown 开发者指南。`npm run build` 会在 Vite 构建后将这些 React 页面预渲染为首个 HTTP 响应就可读取的 HTML，并重新生成 sitemap 清单；新增公开指南在下次构建部署后自动进入 sitemap。登录、用户、后台、API、预览和测试身份页面不进入 sitemap，并在适当位置标记 `noindex`。
+
+仅规范生产环境使用 `ENVIRONMENT=production`；预览环境必须使用其他值，使公开 HTML 返回 `X-Robots-Tag: noindex`。可选 `GOOGLE_SITE_VERIFICATION` 会为公开页面加入 Search Console 验证标签，推荐优先使用 DNS Domain Property 验证。在 Search Console 提交 `https://accounts.aryuki.com/sitemap.xml`；重要新页面可使用 URL 检查申请编入索引。运行 `npm run test:seo`、`npm run build` 和针对本地或已部署 Worker 的 `npm run check:seo`。完整步骤及限制见 [docs/SEO.md](docs/SEO.md)。
+
 ### 在线文档同步
 
-`/dev/docs` 在 Vite 构建时自动收录 `Subapp-Docs子应用配置文档/` 目录下的**全部 Markdown 文件**；`/user/docs` 直接读取 `docs/user-guide.md`。仓库文件是唯一内容来源，新增、删除或修改文档后，**下一次构建并部署**即可同步网页，无需再手工维护一份页面内容。页面展示以台北时区计算的构建日期；每份文档另显示自身的“更新时间”，修订文档时也应更新该日期。仅修改本地文件不会自动改变线上 Worker。旧指南继续可查阅，但新子应用请优先使用注明日期的统一登录指南。
+`/dev/docs` 在构建时自动收录 `Subapp-Docs子应用配置文档/` 目录下的**全部 Markdown 文件**，并为每份指南生成独立的 `/dev/docs/<文档名>` 页面；`/user/docs` 读取 `docs/user-guide.md`。仓库文件是唯一内容来源，新增、删除或修改文档后，**下一次构建并部署**即可同步网页和 sitemap，无需再手工维护一份页面内容。页面展示以台北时区计算的构建日期；每份文档另显示自身的“更新时间”，修订文档时也应更新该日期。仅修改本地文件不会自动改变线上 Worker。旧指南继续可查阅，但新子应用请优先使用注明日期的统一登录指南。
 
 `.github/workflows/publish-docs.yml` 会在文档或隐私政策源码推送到 `master` 时构建并部署；也可在 **Actions > Publish online documentation > Run workflow** 手动运行。先在 **GitHub 仓库 > Settings > Secrets and variables > Actions > New repository secret** 新建两个仓库级 Actions 密钥：
 

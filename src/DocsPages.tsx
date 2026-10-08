@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BookOpen, CalendarDays, ChevronDown, Search, Shield } from 'lucide-react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ThemeToggle, useThemeMode } from './theme';
@@ -22,10 +22,11 @@ const preferredOrder = [
   '接入错误经验总结.md',
 ];
 
-const documents = Object.entries(sources).map(([path, content]) => {
+export const seoDocuments = Object.entries(sources).map(([path, content]) => {
   const filename = path.split('/').pop() || path;
   return {
     filename,
+    slug: filename.replace(/\.md$/i, ''),
     title: content.match(/^#\s+(.+)$/m)?.[1]?.trim() || filename.replace(/\.md$/, ''),
     updated: content.match(/^>\s*(?:更新时间|更新|Updated)[:：]\s*(\d{4}-\d{2}-\d{2})/m)?.[1] || '',
     content,
@@ -36,17 +37,19 @@ const documents = Object.entries(sources).map(([path, content]) => {
   return (aOrder < 0 ? preferredOrder.length : aOrder) - (bOrder < 0 ? preferredOrder.length : bOrder)
     || a.title.localeCompare(b.title, 'zh-CN');
 });
+const documents = seoDocuments;
 const userGuideUpdated = userGuide.match(/^>\s*更新时间[:：]\s*(\d{4}-\d{2}-\d{2})/m)?.[1] || __DOCS_BUILD_DATE__;
 
 function MarkdownArticle({ content, linkDocs }: { content: string; linkDocs?: boolean }) {
   return <div className="docs-markdown">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      h1: ({ children }) => <h2>{children}</h2>,
       a: ({ href = '', children }) => {
         if (linkDocs && !/^(?:[a-z]+:|\/|#)/i.test(href)) {
           const [relativePath, fragment] = href.split('#');
           const filename = decodeURIComponent(relativePath.split('/').pop() || '');
           if (documents.some((doc) => doc.filename === filename)) {
-            return <Link to={`/dev/docs?doc=${encodeURIComponent(filename)}${fragment ? `#${fragment}` : ''}`}>{children}</Link>;
+            return <Link to={`/dev/docs/${encodeURIComponent(filename.replace(/\.md$/i, ''))}${fragment ? `#${fragment}` : ''}`}>{children}</Link>;
           }
         }
         if (/^https?:\/\//i.test(href)) return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
@@ -73,25 +76,28 @@ function DocsShell({ title, subtitle, backTo, children }: { title: string; subti
 }
 
 export function SubappDocsPage() {
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
+  const location = useLocation();
+  const docSlug = location.pathname.startsWith('/dev/docs/') ? decodeURIComponent(location.pathname.slice('/dev/docs/'.length)) : '';
   const [search, setSearch] = useState('');
   const filename = params.get('doc');
-  const selected = documents.find((doc) => doc.filename === filename) || documents[0];
+  const selected = docSlug
+    ? documents.find((doc) => doc.slug === docSlug)
+    : documents.find((doc) => doc.filename === filename);
   const filtered = useMemo(() => documents.filter((doc) => `${doc.title} ${doc.filename} ${doc.content}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())), [search]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [selected?.filename]);
 
-  const choose = (next: string) => setParams({ doc: next });
-  return <DocsShell title="子应用接入文档" subtitle="登录、权限、测试身份与用量接入" backTo="/dash">
+  return <DocsShell title={selected?.title || '子应用接入文档'} subtitle="登录、权限、测试身份与用量接入" backTo="/dash">
     <div className="docs-layout">
       <aside className="docs-sidebar" aria-label="文档目录">
         <div className="docs-search"><input aria-label="搜索文档" placeholder="搜索文档" value={search} onChange={(event) => setSearch(event.target.value)} /><Search size={18} /></div>
         <div className="docs-list" role="navigation" aria-label="子应用文档">
-          {filtered.map((doc) => <button type="button" key={doc.filename} className="docs-list-item" data-active={doc.filename === selected?.filename} onClick={() => choose(doc.filename)}><span>{doc.title}</span>{doc.updated && <small>{doc.updated}</small>}</button>)}
+          {filtered.map((doc) => <Link key={doc.filename} to={`/dev/docs/${encodeURIComponent(doc.slug)}`} className="docs-list-item" data-active={doc.filename === selected?.filename}><span>{doc.title}</span>{doc.updated && <small>{doc.updated}</small>}</Link>)}
           {!filtered.length && <p className="docs-empty">没有匹配的文档</p>}
         </div>
       </aside>
       <article className="docs-article">
-        {selected ? <><div className="docs-article-meta"><span>子应用文档 / {documents.indexOf(selected) + 1} of {documents.length}</span>{selected.updated && <span>文档更新 {selected.updated}</span>}</div><MarkdownArticle content={selected.content} linkDocs /></> : <p>暂无文档。</p>}
+        {selected ? <><div className="docs-article-meta"><span>子应用文档 / {documents.indexOf(selected) + 1} of {documents.length}</span>{selected.updated && <span>文档更新 {selected.updated}</span>}</div><MarkdownArticle content={selected.content} linkDocs /></> : <><div className="docs-article-meta"><span>全部文档</span><span>{documents.length} 篇</span></div><nav className="docs-index-list" aria-label="子应用接入指南">{documents.map((doc) => <Link className="docs-index-row" key={doc.filename} to={`/dev/docs/${encodeURIComponent(doc.slug)}`}><span>{doc.title}</span>{doc.updated ? <small>{doc.updated}</small> : null}</Link>)}</nav></>}
       </article>
     </div>
   </DocsShell>;

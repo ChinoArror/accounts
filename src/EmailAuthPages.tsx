@@ -232,7 +232,7 @@ export function LandingPage() {
             <img src="/auth-center-hero.webp" alt="A creative professional working at a desk" />
           </motion.figure>
         </main>
-        <footer className="ac-landing-footer"><span>© {new Date().getFullYear()} Aryuki</span><Link to="/privacy">Privacy</Link></footer>
+        <footer className="ac-landing-footer"><span>© {new Date().getFullYear()} Aryuki</span><Link to="/user/docs">User guide</Link><Link to="/dev/docs">Developer docs</Link><Link to="/privacy">Privacy</Link></footer>
       </div>
     </div>
   );

@@ -6,12 +6,23 @@ on:
     paths:
       - 'README.md'
       - 'README_zh.md'
+      - 'docs/SEO.md'
       - 'Subapp-Docs子应用配置文档/**'
       - 'docs/user-guide.md'
       - 'src/DocsPages.tsx'
       - 'src/docs.css'
       - 'src/PrivacyPolicy.tsx'
       - 'src/LegalFooter.tsx'
+      - 'src/EmailAuthPages.tsx'
+      - 'src/App.tsx'
+      - 'src/index.ts'
+      - 'src/seo.ts'
+      - 'src/SeoSsrRouter.tsx'
+      - 'scripts/generateSeo.ts'
+      - 'scripts/checkSeo.ts'
+      - 'test/test_seo.ts'
+      - 'index.html'
+      - 'wrangler.toml'
       - 'vite.config.ts'
       - 'package.json'
       - 'package-lock.json'
@@ -32,7 +43,18 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run test:policy
+      - run: npm run test:seo
       - run: npm run build
+      - name: Check local SEO responses
+        run: |
+          npx wrangler dev --local --port 8791 --local-protocol https > /dev/null 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --noproxy '*' -kfsS https://127.0.0.1:8791/robots.txt > /dev/null; then break; fi
+            sleep 1
+          done
+          SEO_BASE_URL=https://127.0.0.1:8791 npm run check:seo
       - name: Check Cloudflare deployment credentials
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
