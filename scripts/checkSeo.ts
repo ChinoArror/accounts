@@ -8,8 +8,8 @@ if (/^https:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(base)) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
-async function get(path: string, redirect: RequestRedirect = 'follow') {
-  return fetch(`${base}${path}`, { redirect, headers: { 'User-Agent': 'AuthCenterSeoCheck/1.0' } });
+async function get(path: string, redirect: RequestRedirect = 'follow', language?: string) {
+  return fetch(`${base}${path}`, { redirect, headers: { 'User-Agent': 'AuthCenterSeoCheck/1.0', ...(language ? { 'Accept-Language': language } : {}) } });
 }
 
 function checkHtml(html: string, path: string, title?: string) {
@@ -22,6 +22,11 @@ function checkHtml(html: string, path: string, title?: string) {
   assert.equal(canonical, `${site}${path === '/' ? '/' : path}`, `${path}: canonical`);
   assert.doesNotMatch(html, /<meta name="robots" content="[^"]*noindex/i, `${path}: unexpected noindex`);
   if (title) assert.ok(html.includes(title), `${path}: expected page content`);
+  if (/\/(?:dev|user)\/docs\/(?:en|zh)(?:\/|$)/.test(path)) {
+    assert.match(html, /<link rel="alternate" hreflang="en"/);
+    assert.match(html, /<link rel="alternate" hreflang="zh-CN"/);
+    assert.match(html, new RegExp(`<html lang="${path.includes('/docs/en') ? 'en' : 'zh-CN'}">`));
+  }
 }
 
 const home = await get('/');
@@ -51,7 +56,11 @@ for (const loc of locs) {
 }
 assert.ok(locs.includes(`${site}/`), 'home listed');
 assert.ok(locs.includes(`${site}/privacy`), 'privacy listed');
-const doc = locs.find((loc) => loc.includes('/dev/docs/'));
+for (const path of ['/dev/docs/en', '/dev/docs/zh', '/user/docs/en', '/user/docs/zh']) {
+  assert.ok(locs.includes(`${site}${path}`), `${path} listed`);
+}
+assert.ok(!locs.includes(`${site}/dev/docs`) && !locs.includes(`${site}/user/docs`), 'language-neutral aliases excluded');
+const doc = locs.find((loc) => loc.includes('/dev/docs/zh/'));
 assert.ok(doc, 'generated document listed');
 
 for (const loc of locs) {
@@ -79,7 +88,24 @@ assert.equal(new URL(slash.headers.get('location')!).pathname, '/privacy');
 
 const oldDocumentUrl = `/dev/docs?doc=${encodeURIComponent(decodeURIComponent(new URL(doc).pathname.split('/').at(-1)!) + '.md')}`;
 const oldDocument = await get(oldDocumentUrl, 'manual');
-assert.equal(oldDocument.status, 301, 'legacy document link redirects');
+assert.equal(oldDocument.status, 302, 'legacy document link redirects');
 assert.equal(new URL(oldDocument.headers.get('location')!).pathname, new URL(doc).pathname);
+const oldSlug = new URL(doc).pathname.replace('/dev/docs/zh/', '/dev/docs/');
+const oldSlugResponse = await get(oldSlug, 'manual', 'en-US');
+assert.equal(oldSlugResponse.status, 302, 'legacy slug redirects');
+assert.equal(new URL(oldSlugResponse.headers.get('location')!).pathname, new URL(doc).pathname.replace('/dev/docs/zh/', '/dev/docs/en/'));
+
+for (const [header, suffix] of [['en-US,en;q=0.9', 'en'], ['zh-CN,zh;q=0.9', 'zh']] as const) {
+  for (const prefix of ['/dev/docs', '/user/docs']) {
+    const alias = await get(prefix, 'manual', header);
+    assert.equal(alias.status, 302, `${prefix} negotiates ${suffix}`);
+    assert.equal(new URL(alias.headers.get('location')!).pathname, `${prefix}/${suffix}`);
+    assert.equal(alias.headers.get('vary'), 'Accept-Language');
+  }
+}
+const englishGuide = await get('/user/docs/en');
+assert.match(await englishGuide.text(), /Recover your password/);
+const chineseGuide = await get('/user/docs/zh');
+assert.match(await chineseGuide.text(), /找回密码/);
 
 console.log(`SEO checks passed against ${base}: ${locs.length} canonical sitemap URLs`);

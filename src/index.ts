@@ -5,11 +5,12 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from '@simplewebauthn/server';
 import { cleanupExpiredPendingRegistrations, registerEmailAuthFeature, releaseExpiredRegisterInvites } from './emailAuthFeature';
 import { buildPreviewUrl, expandPreviewApps, normalizePreviewEnabled, previewSessionExpiresAt } from './testPreview';
-import { cleanupOAuthFlow, registerOAuthFlow, isAllowedOAuthRedirect } from './oauthFlow';
+import { cleanupOAuthFlow, registerOAuthFlow, verifiedAccountsOrigin } from './oauthFlow';
+import { alternateCnCallback, resolveAppCallback } from './appCallback';
 import { clearSessionCookies, durableSessionActive, findRefreshSession, issueDurableSession, recordSessionApp, refreshSeconds, revokeDurableSession, rotateRefreshSession, setAccessCookie, accessSeconds } from './durableSession';
 import { buildRegistrationSeries, parseRegistrationRange } from './registrationStats';
 import { passwordProblem } from './passwordPolicy';
-import { buildCanonicalUrl, buildSitemapXml, classifyPublicPath, DEFAULT_SITE_URL, isKnownPrivatePath, normalizedPath, type SeoPage } from './seo';
+import { buildCanonicalUrl, buildSitemapXml, classifyPublicPath, DEFAULT_SITE_URL, isKnownPrivatePath, localizedDocsPath, normalizedPath, preferredDocsLanguage, type SeoPage } from './seo';
 
 type D1Database = any;
 type AnalyticsEngineDataset = any;
@@ -1135,25 +1136,27 @@ app.get('/api/session', async (c) => {
 
 app.post('/api/auth/session/continue', async (c) => {
   const origin = c.req.header('Origin');
-  if (origin && origin !== new URL(c.req.url).origin) return c.json({ ok: false, error: 'Invalid origin' }, 403);
+  if (origin && origin !== await verifiedAccountsOrigin(c)) return c.json({ ok: false, error: 'Invalid origin' }, 403);
   const body: any = await c.req.json().catch(() => ({}));
   const appId = String(body.app_id || '').trim();
-  const redirect = String(body.redirect_uri || body.redirect || '').trim();
+  let redirect = String(body.redirect_uri || body.redirect || '').trim();
   if (!!appId !== !!redirect) return c.json({ ok: false, error: 'Application and callback are required together' }, 400);
   if (appId) {
-    const app: any = await c.env.DB.prepare('SELECT callback_url, status FROM apps WHERE app_id = ?').bind(appId).first();
-    if (!app || app.status !== 'active' || !isAllowedOAuthRedirect(app.callback_url, redirect)) return c.json({ ok: false, error: 'Invalid callback' }, 400);
+    const app: any = await c.env.DB.prepare('SELECT callback_url, allow_cn_callback, status FROM apps WHERE app_id = ?').bind(appId).first();
+    const resolved = app?.status === 'active' ? resolveAppCallback(app, redirect) : null;
+    if (!resolved) return c.json({ ok: false, error: 'Invalid callback' }, 400);
+    redirect = resolved.url;
   }
   const found = await findRefreshSession(c);
   if (!found) {
     const legacy = await authenticateCookieSession(c, true);
     if (!legacy || legacy.payload.session_kind === 'durable' || (!legacy.user && legacy.payload.uuid !== 'admin')) {
       clearSessionCookies(c);
-      return c.json({ ok: false, error: 'Session expired' }, 401);
+      return c.json({ ok: false, error: 'Session expired', callback_url: appId ? redirect : null }, 401);
     }
     const previousUser = legacy.user || { uuid: 'admin', user_id: '0', username: c.env.ADMIN_USERNAME || 'admin', name: 'Admin', email: c.env.ADMIN_EMAIL || null,
       email_verified: !!c.env.ADMIN_EMAIL, role: 'admin', status: 'active', auth_provider: 'sso', cookie_expiry_days: getAdminCookieExpiryDays(c) };
-    if (previousUser.status !== 'active') return c.json({ ok: false, error: 'Session expired' }, 401);
+    if (previousUser.status !== 'active') return c.json({ ok: false, error: 'Session expired', callback_url: appId ? redirect : null }, 401);
     if (appId && previousUser.uuid !== 'admin') {
       const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(previousUser.uuid, appId).first();
       if (!permission) return c.json({ ok: false, error: 'No permission for this application' }, 403);
@@ -1163,7 +1166,7 @@ app.post('/api/auth/session/continue', async (c) => {
       const callback = new URL(redirect);
       callback.searchParams.set('token', upgraded.token);
       c.header('Cache-Control', 'no-store');
-      return c.json({ ok: true, token: upgraded.token, redirect_to: callback.toString(), user: buildTokenPayload(c, previousUser, upgraded.sessionId) });
+      return c.json({ ok: true, token: upgraded.token, callback_url: redirect, redirect_to: callback.toString(), user: buildTokenPayload(c, previousUser, upgraded.sessionId) });
     }
     c.header('Cache-Control', 'no-store');
     return c.json({ ok: true, token: upgraded.token, user: buildTokenPayload(c, previousUser, upgraded.sessionId), redirect_to: previousUser.role === 'admin' ? '/dash' : `/user/${encodeURIComponent(previousUser.uuid)}` });
@@ -1174,14 +1177,14 @@ app.post('/api/auth/session/continue', async (c) => {
       email_verified: !!c.env.ADMIN_EMAIL, role: 'admin', status: 'active', auth_provider: 'sso' };
   } else {
     user = await c.env.DB.prepare('SELECT * FROM users WHERE uuid = ?').bind(found.row.user_id).first();
-    if (!user || user.status !== 'active') { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired' }, 401); }
+    if (!user || user.status !== 'active') { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired', callback_url: appId ? redirect : null }, 401); }
     if (Date.parse(found.row.created_at) + refreshSeconds(c, user.cookie_expiry_days) * 1000 <= Date.now()) {
       await revokeSession(c, found.row.id);
       clearSessionCookies(c);
-      return c.json({ ok: false, error: 'Session expired' }, 401);
+      return c.json({ ok: false, error: 'Session expired', callback_url: appId ? redirect : null }, 401);
     }
     const device: any = await c.env.DB.prepare('SELECT revoked_at FROM user_sessions WHERE session_id = ?').bind(found.row.id).first();
-    if (!device || device.revoked_at) { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired' }, 401); }
+    if (!device || device.revoked_at) { clearSessionCookies(c); return c.json({ ok: false, error: 'Session expired', callback_url: appId ? redirect : null }, 401); }
     if (appId) {
       const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(user.uuid, appId).first();
       if (!permission) return c.json({ ok: false, error: 'No permission for this application' }, 403);
@@ -1195,7 +1198,7 @@ app.post('/api/auth/session/continue', async (c) => {
     const callback = new URL(redirect);
     callback.searchParams.set('token', token);
     c.header('Cache-Control', 'no-store');
-    return c.json({ ok: true, token, redirect_to: callback.toString(), user: buildTokenPayload(c, user, found.row.id) });
+    return c.json({ ok: true, token, callback_url: redirect, redirect_to: callback.toString(), user: buildTokenPayload(c, user, found.row.id) });
   }
   c.header('Cache-Control', 'no-store');
   return c.json({ ok: true, token, user: buildTokenPayload(c, user, found.row.id), redirect_to: user.role === 'admin' ? '/dash' : `/user/${encodeURIComponent(user.uuid)}` });
@@ -1612,7 +1615,7 @@ app.delete('/api/account/oauth-bindings/:provider', async (c) => {
   const provider = c.req.param('provider');
   if (!oauthProvider(provider)) return c.json({ error: 'Unsupported provider' }, 400);
   const origin = c.req.header('Origin');
-  if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: 'Invalid origin' }, 403);
+  if (origin && origin !== await verifiedAccountsOrigin(c)) return c.json({ error: 'Invalid origin' }, 403);
   const result = await c.env.DB.prepare('DELETE FROM oauth_identities WHERE user_uuid = ? AND provider = ?').bind(active.user.uuid, provider).run();
   if (!result.meta?.changes) return c.json({ error: 'Binding not found' }, 404);
   if (provider === 'github') await c.env.DB.prepare('UPDATE users SET github_id = NULL WHERE uuid = ?').bind(active.user.uuid).run();
@@ -2131,7 +2134,7 @@ app.post('/api/passkey/generate-registration-options', async (c) => {
       if (user) username = user.username;
     }
 
-    const rpID = new URL(c.req.url).hostname;
+    const rpID = new URL(await verifiedAccountsOrigin(c)).hostname;
     const options = await generateRegistrationOptions({
       rpName,
       rpID,
@@ -2170,8 +2173,8 @@ app.post('/api/passkey/verify-registration', async (c) => {
     if (challengePayload.uuid !== uuid) return c.json({ error: 'Challenge mismatch' }, 400);
 
     const body = await c.req.json();
-    const rpID = new URL(c.req.url).hostname;
-    const origin = new URL(c.req.url).origin;
+    const origin = await verifiedAccountsOrigin(c);
+    const rpID = new URL(origin).hostname;
 
     const verification = await verifyRegistrationResponse({
       response: body,
@@ -2286,7 +2289,7 @@ app.delete('/api/passkey/admin/:id', async (c) => {
 });
 
 app.get('/api/passkey/generate-authentication-options', async (c) => {
-  const rpID = new URL(c.req.url).hostname;
+  const rpID = new URL(await verifiedAccountsOrigin(c)).hostname;
   const options = await generateAuthenticationOptions({
     rpID,
     userVerification: 'preferred',
@@ -2309,8 +2312,8 @@ app.post('/api/passkey/verify-authentication', async (c) => {
     const challengePayload = await verifyJWT(challengeToken, c.env.JWT_SECRET);
     const body = await c.req.json();
 
-    const rpID = new URL(c.req.url).hostname;
-    const origin = new URL(c.req.url).origin;
+    const origin = await verifiedAccountsOrigin(c);
+    const rpID = new URL(origin).hostname;
 
     const b64CredentialId = body.id;
     const passkeyRecord: any = await c.env.DB.prepare('SELECT uuid, credential_id, public_key, counter FROM passkeys WHERE credential_id = ?').bind(b64CredentialId).first();
@@ -2995,13 +2998,16 @@ app.get('/admin/apps', async (c) => {
 });
 
 app.post('/admin/apps', async (c) => {
-  const { app_id, app_name, callback_url, secret_key, use_agent_limit } = await c.req.json();
+  const { app_id, app_name, callback_url, secret_key, use_agent_limit, allow_cn_callback } = await c.req.json();
+  if (allow_cn_callback !== undefined && typeof allow_cn_callback !== 'boolean') return c.json({ error: 'Invalid .cn callback setting' }, 400);
+  const allowCn = allow_cn_callback === true ? 1 : 0;
+  if (allowCn && !alternateCnCallback(String(callback_url || ''))) return c.json({ error: 'The callback must be an Aryuki HTTPS .com URL without query or fragment to enable .cn' }, 400);
   try {
     const existingApp: any = await c.env.DB.prepare('SELECT app_id FROM apps WHERE app_id = ?').bind(app_id).first();
     if (existingApp) return c.json({ error: 'App ID already exists' }, 409);
     await c.env.DB.prepare(
-      'INSERT INTO apps (app_id, app_name, callback_url, secret_key, use_agent_limit) VALUES (?, ?, ?, ?, ?)'
-    ).bind(app_id, app_name, callback_url, secret_key, use_agent_limit ? 1 : 0).run();
+      'INSERT INTO apps (app_id, app_name, callback_url, secret_key, use_agent_limit, allow_cn_callback) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(app_id, app_name, callback_url, secret_key, use_agent_limit ? 1 : 0, allowCn).run();
     return c.json({ success: true });
   } catch (e: any) {
     return c.json({ error: e.message }, 400);
@@ -3010,10 +3016,15 @@ app.post('/admin/apps', async (c) => {
 
 app.put('/admin/apps/:app_id', async (c) => {
   const appId = c.req.param('app_id');
-  const { app_name, callback_url, secret_key, use_agent_limit } = await c.req.json();
+  const { app_name, callback_url, secret_key, use_agent_limit, allow_cn_callback } = await c.req.json();
+  if (allow_cn_callback !== undefined && typeof allow_cn_callback !== 'boolean') return c.json({ error: 'Invalid .cn callback setting' }, 400);
+  const existing: any = await c.env.DB.prepare('SELECT allow_cn_callback FROM apps WHERE app_id = ?').bind(appId).first();
+  if (!existing) return c.json({ error: 'App not found' }, 404);
+  const allowCn = allow_cn_callback === undefined ? Number(existing.allow_cn_callback || 0) : allow_cn_callback ? 1 : 0;
+  if (allowCn && !alternateCnCallback(String(callback_url || ''))) return c.json({ error: 'The callback must be an Aryuki HTTPS .com URL without query or fragment to enable .cn' }, 400);
   await c.env.DB.prepare(
-    'UPDATE apps SET app_name = ?, callback_url = ?, secret_key = ?, use_agent_limit = ? WHERE app_id = ?'
-  ).bind(app_name, callback_url, secret_key, use_agent_limit ? 1 : 0, appId).run();
+    'UPDATE apps SET app_name = ?, callback_url = ?, secret_key = ?, use_agent_limit = ?, allow_cn_callback = ? WHERE app_id = ?'
+  ).bind(app_name, callback_url, secret_key, use_agent_limit ? 1 : 0, allowCn, appId).run();
   return c.json({ success: true });
 });
 
@@ -3638,9 +3649,24 @@ app.get('*', async (c) => {
   if (path.startsWith('/_seo/')) return new Response('Not found', { status: 404, headers: { 'X-Robots-Tag': 'noindex' } });
 
   const pages = await seoPages(c);
-  if (path === '/dev/docs' && url.searchParams.has('doc')) {
-    const doc = pages.find((page) => page.legacyFilename === url.searchParams.get('doc'));
-    return Response.redirect(`${url.origin}${doc?.path || '/dev/docs'}`, 301);
+  const localizedDocument = path.match(/^\/dev\/docs\/(en|zh)\/(.+)$/);
+  if (localizedDocument) {
+    try {
+      const canonicalDoc = localizedDocsPath(path, localizedDocument[1] as 'en' | 'zh');
+      if (canonicalDoc !== path && classifyPublicPath(canonicalDoc, pages)) {
+        return Response.redirect(`${url.origin}${canonicalDoc}${url.search}`, 301);
+      }
+    } catch { /* Invalid legacy slug falls through to 404. */ }
+  }
+  if (path === '/dev/docs' || path === '/user/docs' || (path.startsWith('/dev/docs/') && !/^\/dev\/docs\/(?:en|zh)(?:\/|$)/.test(path))) {
+    const language = preferredDocsLanguage(c.req.header('Accept-Language') || null);
+    const legacyDoc = path === '/dev/docs' && url.searchParams.has('doc')
+      ? pages.find((page) => page.language === language && page.legacyFilename === url.searchParams.get('doc'))
+      : null;
+    const target = legacyDoc?.path || localizedDocsPath(path === '/dev/docs' ? path : path, language);
+    if (classifyPublicPath(target, pages)) {
+      return new Response(null, { status: 302, headers: { Location: `${url.origin}${target}`, Vary: 'Accept-Language', 'Cache-Control': 'private, no-store' } });
+    }
   }
   const page = classifyPublicPath(path, pages);
   if (page?.asset) {

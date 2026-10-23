@@ -4,6 +4,7 @@ import { generateJWT, generateSalt, hashPassword, verifyJWT } from './auth';
 import { oauthDecision, oauthEmail, oauthHourBucket, safeOAuthName } from './oauthPolicy';
 import { exchangeGithub, exchangeGoogle, googleAuthorizeUrl, type OAuthProfile, type OAuthProvider } from './oauthProviders';
 import { enqueueEmail } from './emailAuthFeature';
+import { resolveAppCallback } from './appCallback';
 
 type Ctx = any;
 type Target = { app_id?: string; app_redirect?: string };
@@ -52,12 +53,29 @@ function setPrivateCookie(c: Ctx, name: string, value: string) {
   setCookie(c, name, value, { path: '/', maxAge: 600, httpOnly: true, secure: true, sameSite: 'Lax' });
 }
 
+export async function verifiedAccountsOrigin(c: Ctx): Promise<string> {
+  const directOrigin = String(c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin);
+  const host = String(c.req.header('X-Forwarded-Host') || '');
+  const timestamp = String(c.req.header('X-ESA-Origin-Timestamp') || '');
+  const signature = String(c.req.header('X-ESA-Origin-Signature') || '');
+  const secret = String(c.env.PROXY_ORIGIN_SECRET || '');
+  if (host !== 'accounts.aryuki.cn' || !secret || !timestamp || !signature || !/^[a-f0-9]{64}$/.test(signature)) return directOrigin;
+  if (!/^\d{10}$/.test(timestamp) || Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp)) > 300) return directOrigin;
+  const url = new URL(c.req.url);
+  const message = `v1\n${host}\n${c.req.method.toUpperCase()}\n${url.pathname}${url.search}\n${timestamp}`;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+  const bytes = Uint8Array.from(signature.match(/../g)!, (hex) => parseInt(hex, 16));
+  const valid = await crypto.subtle.verify('HMAC', key, bytes, new TextEncoder().encode(message));
+  return valid ? 'https://accounts.aryuki.cn' : directOrigin;
+}
+
 async function safeTarget(c: Ctx, appId: string | undefined, redirect: string | undefined): Promise<Target | null> {
   if (!appId && !redirect) return {};
   if (!appId || !redirect) return null;
-  const app: any = await c.env.DB.prepare('SELECT callback_url, status FROM apps WHERE app_id = ?').bind(appId).first();
-  if (!app || app.status !== 'active' || !isAllowedOAuthRedirect(app.callback_url, redirect)) return null;
-  return { app_id: appId, app_redirect: redirect };
+  const app: any = await c.env.DB.prepare('SELECT callback_url, allow_cn_callback, status FROM apps WHERE app_id = ?').bind(appId).first();
+  const resolved = app?.status === 'active' ? resolveAppCallback(app, redirect) : null;
+  if (!resolved) return null;
+  return { app_id: appId, app_redirect: resolved.url };
 }
 
 async function setting(c: Ctx, key: string, fallback: any) {
@@ -205,12 +223,13 @@ export function registerOAuthFlow(app: Hono<any>, deps: Dependencies) {
     const sid = randomSecret();
     const nonce = randomSecret();
     const verifier = provider === 'google' ? randomSecret() : null;
-    const state = await generateJWT({ sid, provider, nonce, bind_uuid: bindUuid, bind_proof: bindProof, ...target }, c.env.JWT_SECRET, TEN_MINUTES / 86400000);
+    const callbackOrigin = await verifiedAccountsOrigin(c);
+    const state = await generateJWT({ sid, provider, nonce, bind_uuid: bindUuid, bind_proof: bindProof, oauth_origin: callbackOrigin, ...target }, c.env.JWT_SECRET, TEN_MINUTES / 86400000);
     const now = new Date();
     await c.env.DB.prepare('INSERT INTO oauth_states (state_hash, provider, verifier, nonce, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(await sha256(state), provider, verifier, nonce, now.toISOString(), new Date(now.getTime() + TEN_MINUTES).toISOString()).run();
     setPrivateCookie(c, `${STATE_COOKIE}${provider}`, sid);
-    const redirect = `${c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin}/api/${provider}/callback`;
+    const redirect = `${callbackOrigin}/api/${provider}/callback`;
     if (provider === 'google') {
       const challenge = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier!)))))
         .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -230,7 +249,9 @@ export function registerOAuthFlow(app: Hono<any>, deps: Dependencies) {
     if (!code || !state) return c.redirect('/login?error=oauth_cancelled');
     const payload = await verifyJWT(state, c.env.JWT_SECRET).catch(() => null);
     const sid = getCookie(c, `${STATE_COOKIE}${provider}`);
-    if (!payload || payload.provider !== provider || !sid || payload.sid !== sid) return c.redirect('/login?error=oauth_state');
+    const callbackOrigin = await verifiedAccountsOrigin(c);
+    const expectedOrigin = payload?.oauth_origin || c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin;
+    if (!payload || payload.provider !== provider || !sid || payload.sid !== sid || expectedOrigin !== callbackOrigin) return c.redirect('/login?error=oauth_state');
     const now = new Date().toISOString();
     const row: any = await c.env.DB.prepare(`
       UPDATE oauth_states SET used_at = ?
@@ -239,7 +260,7 @@ export function registerOAuthFlow(app: Hono<any>, deps: Dependencies) {
     `).bind(now, await sha256(state), provider, now).first();
     clearCookie(c, `${STATE_COOKIE}${provider}`);
     if (!row) return c.redirect('/login?error=oauth_state');
-    const redirect = `${c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin}/api/${provider}/callback`;
+    const redirect = `${callbackOrigin}/api/${provider}/callback`;
     const google = provider === 'google' ? googleCredentials(c) : null;
     if (provider === 'google' && !google) return c.redirect('/login?error=google_unavailable');
     let profile: OAuthProfile;

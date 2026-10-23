@@ -28,7 +28,7 @@ const db = {
   async batch(queries: any[]) { return Promise.all(queries.map((query) => query.run())); },
 };
 const env: any = {
-  DB: db, JWT_SECRET: 'test-secret', PASSWORD_PEPPER: 'test-pepper', ADMIN_USERNAME: 'admin',
+  DB: db, JWT_SECRET: 'test-secret', PASSWORD_PEPPER: 'test-pepper', ADMIN_USERNAME: 'admin', ADMIN_PASSWORD: 'TestAdmin!Password123',
   REGISTRATION_MODE: 'open', ALLOWED_EMAIL_DOMAINS: 'gmail.com',
 };
 const salt = generateSalt();
@@ -39,7 +39,7 @@ sqlite.prepare("INSERT INTO apps (app_id, app_name, callback_url, secret_key, us
 
 const post = (path: string, body: Record<string, unknown>) => worker.fetch(new Request(`https://accounts.aryuki.com${path}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-}), env);
+}), env, { waitUntil() {}, passThroughOnException() {} } as any);
 const draft = { email: 'new@gmail.com', username: 'newuser', fullname: 'New User', password: 'New!Password123' };
 assert.equal((await post('/api/auth/register/preflight', draft)).status, 200);
 assert.equal((await post('/api/auth/register/preflight', { ...draft, password: 'pass1234' })).status, 400);
@@ -64,6 +64,19 @@ assert.match((await forbiddenLegacy.json() as any).error, /permission/i);
 
 const quota = () => worker.fetch(new Request('https://accounts.aryuki.com/api/quota/check?uuid=u1&app_id=test-app', { headers: { Authorization: 'Bearer app-secret' } }), env);
 sqlite.prepare("INSERT INTO user_apps (uuid, app_id, rpm_limit, rpd_limit, daily_token_limit) VALUES ('u1', 'test-app', NULL, NULL, NULL)").run();
+sqlite.prepare("INSERT INTO apps (app_id, app_name, callback_url, secret_key, allow_cn_callback) VALUES ('tickpoint', 'TickPoint', 'https://point.aryuki.com/sso-callback', 'point-secret', 1)").run();
+sqlite.prepare("INSERT INTO user_apps (uuid, app_id) VALUES ('u1', 'tickpoint')").run();
+const pointLogin = () => post('/api/auth/login/email', { identifier: 'existing', password: 'Existing!Password123', app_id: 'tickpoint', redirect_uri: 'https://point.aryuki.cn/sso-callback' });
+const cnLogin = await pointLogin();
+assert.equal(cnLogin.status, 200);
+assert.equal(new URL((await cnLogin.json() as any).redirect_to).origin, 'https://point.aryuki.cn');
+const adminCnLogin = await post('/api/auth/login/email', { identifier: 'admin', password: 'TestAdmin!Password123', app_id: 'tickpoint', redirect_uri: 'https://point.aryuki.cn/sso-callback' });
+assert.equal(adminCnLogin.status, 200);
+assert.equal(new URL((await adminCnLogin.json() as any).redirect_to).origin, 'https://point.aryuki.cn');
+sqlite.prepare("UPDATE apps SET allow_cn_callback = 0 WHERE app_id = 'tickpoint'").run();
+const fallbackLogin = await pointLogin();
+assert.equal(fallbackLogin.status, 200);
+assert.equal(new URL((await fallbackLogin.json() as any).redirect_to).origin, 'https://point.aryuki.com');
 const unlimited = await quota();
 assert.equal(unlimited.status, 200);
 assert.equal((await unlimited.json() as any).unlimited, true);

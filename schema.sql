@@ -123,6 +123,7 @@ CREATE TABLE apps (
     app_group TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     callback_url TEXT NOT NULL,
+    allow_cn_callback INTEGER NOT NULL DEFAULT 0,
     secret_key TEXT NOT NULL,
     use_agent_limit INTEGER DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

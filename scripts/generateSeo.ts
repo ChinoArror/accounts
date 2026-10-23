@@ -21,8 +21,13 @@ function renderPage(page: SeoPage, body: string): string {
   const canonical = buildCanonicalUrl(siteUrl, page.path);
   const title = escapeHtml(page.title);
   const description = escapeHtml(page.description);
+  const alternatePath = page.language ? page.path.replace(/\/docs\/(en|zh)(?=\/|$)/, `/docs/${page.language === 'en' ? 'zh' : 'en'}`) : '';
+  const alternates = alternatePath ? `<link rel="alternate" hreflang="en" href="${escapeHtml(buildCanonicalUrl(siteUrl, page.language === 'en' ? page.path : alternatePath))}">
+<link rel="alternate" hreflang="zh-CN" href="${escapeHtml(buildCanonicalUrl(siteUrl, page.language === 'zh' ? page.path : alternatePath))}">
+<link rel="alternate" hreflang="x-default" href="${escapeHtml(buildCanonicalUrl(siteUrl, page.path.replace(/\/docs\/(?:en|zh)(?=\/|$)/, '/docs')))}">` : '';
   const content = `<meta name="description" content="${description}">
 <link rel="canonical" href="${escapeHtml(canonical)}">
+${alternates}
 <meta property="og:type" content="${page.kind === 'article' ? 'article' : 'website'}">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${description}">
@@ -35,7 +40,7 @@ function renderPage(page: SeoPage, body: string): string {
     ? { '@context': 'https://schema.org', '@type': 'WebSite', name: 'Aryuki Auth Center', url: canonical, description: page.description }
     : { '@context': 'https://schema.org', '@type': 'WebPage', name: page.title, url: canonical, description: page.description, ...(page.lastmod ? { dateModified: page.lastmod } : {}) })}</script>`;
   const withHead = shell.replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`).replace('</head>', `${content}\n</head>`);
-  const lang = page.path === '/' || page.path === '/privacy' ? 'en' : 'zh-CN';
+  const lang = page.language === 'en' || page.path === '/' || page.path === '/privacy' ? 'en' : 'zh-CN';
   return withHead.replace('<html lang="en">', `<html lang="${lang}">`)
     .replace(/<!--SEO_ROOT_START-->[\s\S]*?<!--SEO_ROOT_END-->/, `<!--SEO_ROOT_START-->${body}<!--SEO_ROOT_END-->`);
 }
@@ -51,27 +56,30 @@ try {
   const { LandingPage } = await vite.ssrLoadModule('/src/EmailAuthPages.tsx');
   const { default: PrivacyPolicy } = await vite.ssrLoadModule('/src/PrivacyPolicy.tsx');
   const { SubappDocsPage, UserDocsPage, seoDocuments } = await vite.ssrLoadModule('/src/DocsPages.tsx');
-  const documents = seoDocuments as Array<{ filename: string; slug: string; title: string; updated: string; content: string }>;
+  const documents = seoDocuments as Array<{ filename: string; slug: string; title: string; updated: string; content: string; language: 'en' | 'zh' }>;
   if (!documents.length) throw new Error('No public subapp documents found');
   const pages: SeoPage[] = CORE_PUBLIC_PAGES.map((page) => ({ ...page }));
-  const guide = await readFile(path.resolve('docs/user-guide.md'), 'utf8');
-  pages.find((page) => page.path === '/user/docs')!.lastmod = guide.match(/^>\s*更新时间[:：]\s*(\d{4}-\d{2}-\d{2})/m)?.[1];
-  pages.find((page) => page.path === '/dev/docs')!.lastmod = documents.map((doc) => doc.updated).filter(Boolean).sort().at(-1);
+  for (const language of ['zh', 'en'] as const) {
+    const guide = await readFile(path.resolve(language === 'zh' ? 'docs/user-guide.md' : 'docs/user-guide.en.md'), 'utf8');
+    pages.find((page) => page.path === `/user/docs/${language}`)!.lastmod = guide.match(/^>\s*(?:更新时间|Updated)[:：]\s*(\d{4}-\d{2}-\d{2})/m)?.[1];
+    pages.find((page) => page.path === `/dev/docs/${language}`)!.lastmod = documents.filter((doc) => doc.language === language).map((doc) => doc.updated).filter(Boolean).sort().at(-1);
+  }
   documents.forEach((doc, index) => {
     pages.push({
-      path: `/dev/docs/${encodeURIComponent(doc.slug)}`,
+      path: `/dev/docs/${doc.language}/${encodeURIComponent(doc.slug)}`,
       title: `${doc.title} | Aryuki Auth Center`,
-      description: markdownSummary(doc.content) || `${doc.title}。Auth Center 子应用接入说明与配置步骤。`,
+      description: markdownSummary(doc.content) || (doc.language === 'en' ? `${doc.title}. Auth Center subapp integration steps.` : `${doc.title}。Auth Center 子应用接入说明与配置步骤。`),
       lastmod: doc.updated || undefined,
       kind: 'article',
-      asset: `doc-${index}`,
+      asset: `doc-${doc.language}-${index}`,
       legacyFilename: doc.filename,
+      language: doc.language,
     });
   });
   await mkdir(outputDir, { recursive: true });
   for (const page of pages) {
     const Component = page.path === '/' ? LandingPage : page.path === '/privacy' ? PrivacyPolicy
-      : page.path === '/user/docs' ? UserDocsPage : SubappDocsPage;
+      : page.path.startsWith('/user/docs/') ? UserDocsPage : SubappDocsPage;
     const body = renderToStaticMarkup(React.createElement(SeoSsrRouter, { path: page.path }, React.createElement(Component)));
     if ((body.match(/<h1\b/g) || []).length !== 1) throw new Error(`Expected one H1 in ${page.path}`);
     await writeFile(path.join(outputDir, `${page.asset}.html`), renderPage(page, body));

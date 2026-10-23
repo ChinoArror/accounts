@@ -1,0 +1,1 @@
+ALTER TABLE apps ADD COLUMN allow_cn_callback INTEGER NOT NULL DEFAULT 0;

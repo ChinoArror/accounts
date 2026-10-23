@@ -9,6 +9,7 @@ on:
       - 'docs/SEO.md'
       - 'Subapp-Docs子应用配置文档/**'
       - 'docs/user-guide.md'
+      - 'docs/user-guide.en.md'
       - 'src/DocsPages.tsx'
       - 'src/docs.css'
       - 'src/PrivacyPolicy.tsx'

@@ -31,6 +31,7 @@ const db = {
 const env: any = {
   DB: db, JWT_SECRET: 'local-test-secret', PASSWORD_PEPPER: 'local-test-pepper',
   PUBLIC_BASE_URL: 'https://accounts.aryuki.com', GITHUB_CLIENT_ID: 'client', GITHUB_CLIENT_SECRET: 'secret',
+  PROXY_ORIGIN_SECRET: 'test-origin-signature-key',
   ADMIN_GITHUB_ID: '999', REGISTRATION_MODE: 'open', ALLOWED_EMAIL_DOMAINS: 'gmail.com',
   MAX_GLOBAL_REGISTRATIONS_PER_DAY: '100', MAX_REGISTRATIONS_PER_IP_PER_HOUR: '3', MAX_REGISTRATIONS_PER_IP_PER_DAY: '5',
   ADMIN_USERNAME: 'admin',
@@ -42,11 +43,15 @@ env.AVATAR_BUCKET = {
 };
 let providerId = 42;
 let providerEmail = 'Alice@GMAIL.COM';
+let lastGithubTokenRedirect: string | null = null;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = async (input: any) => {
+globalThis.fetch = async (input: any, init?: RequestInit) => {
   const url = String(input);
   if (url.startsWith('https://avatars.githubusercontent.com/')) return new Response(new Uint8Array(256), { headers: { 'content-type': 'image/png' } });
-  if (url.includes('github.com/login/oauth/access_token')) return Response.json({ access_token: 'access-token' });
+  if (url.includes('github.com/login/oauth/access_token')) {
+    lastGithubTokenRedirect = new URLSearchParams(init?.body as string).get('redirect_uri');
+    return Response.json({ access_token: 'access-token' });
+  }
   if (url.includes('api.github.com/user/emails')) return Response.json([{ email: providerEmail, primary: true, verified: true }]);
   if (url.includes('api.github.com/user')) return Response.json({ id: providerId, login: 'alice', name: 'Alice', avatar_url: `https://avatars.githubusercontent.com/u/${providerId}` });
   throw new Error(`Unexpected upstream request: ${url}`);
@@ -60,6 +65,7 @@ try {
   const stateCookie = start.headers.get('set-cookie')!.split(';')[0];
   const callback = await worker.fetch(new Request(`https://accounts.aryuki.com/api/github/callback?code=ok&state=${encodeURIComponent(state)}`, { headers: { cookie: stateCookie, 'CF-Connecting-IP': '127.0.0.1' } }), env);
   assert.equal(callback.status, 302);
+  assert.equal(lastGithubTokenRedirect, 'https://accounts.aryuki.com/api/github/callback');
   assert.equal(callback.headers.get('location'), '/welcomenewuser');
   const ticketCookie = callback.headers.getSetCookie().find((cookie) => cookie.startsWith('oauth_pending='))!.split(';')[0];
   const headers = { cookie: ticketCookie, 'CF-Connecting-IP': '127.0.0.1' };
@@ -186,5 +192,78 @@ try {
   providerId = 42;
   const loginWhenClosed = await callbackAgain(stillLinked.state, stillLinked.cookie);
   assert.equal(loginWhenClosed.status, 302);
+
+  const signedOriginHeaders = async (url: string, method = 'GET') => {
+    const parsed = new URL(url);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const message = `v1\naccounts.aryuki.cn\n${method}\n${parsed.pathname}${parsed.search}\n${timestamp}`;
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.PROXY_ORIGIN_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const bytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)));
+    const signature = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return { 'X-Forwarded-Host': 'accounts.aryuki.cn', 'X-ESA-Origin-Timestamp': timestamp, 'X-ESA-Origin-Signature': signature };
+  };
+  const loginUrl = 'https://accounts.aryuki.com/api/github/login';
+  const passkeyOptionsUrl = 'https://accounts.aryuki.com/api/passkey/generate-authentication-options';
+  const cnPasskeyOptions = await worker.fetch(new Request(passkeyOptionsUrl, { headers: await signedOriginHeaders(passkeyOptionsUrl) }), env);
+  assert.equal((await cnPasskeyOptions.json() as any).rpId, 'accounts.aryuki.cn');
+  const spoofed = await worker.fetch(new Request(loginUrl, { headers: { 'X-Forwarded-Host': 'accounts.aryuki.cn' } }), env);
+  assert.equal(new URL(spoofed.headers.get('location')!).searchParams.get('redirect_uri'), 'https://accounts.aryuki.com/api/github/callback');
+  const wrongPath = await worker.fetch(new Request(`${loginUrl}?probe=1`, { headers: await signedOriginHeaders(loginUrl) }), env);
+  assert.equal(new URL(wrongPath.headers.get('location')!).searchParams.get('redirect_uri'), 'https://accounts.aryuki.com/api/github/callback');
+  const cnStart = await worker.fetch(new Request(loginUrl, { headers: await signedOriginHeaders(loginUrl) }), env);
+  const cnAuthorization = new URL(cnStart.headers.get('location')!);
+  assert.equal(cnAuthorization.searchParams.get('redirect_uri'), 'https://accounts.aryuki.cn/api/github/callback');
+  const cnState = cnAuthorization.searchParams.get('state')!;
+  const cnStateCookie = cnStart.headers.getSetCookie().find((cookie) => cookie.startsWith('oauth_state_github='))!.split(';')[0];
+  const cnCallbackUrl = `https://accounts.aryuki.com/api/github/callback?code=ok&state=${encodeURIComponent(cnState)}`;
+  const crossed = await worker.fetch(new Request(cnCallbackUrl, { headers: { cookie: cnStateCookie } }), env);
+  assert.equal(crossed.headers.get('location'), '/login?error=oauth_state');
+  const cnCallback = await worker.fetch(new Request(cnCallbackUrl, { headers: { ...await signedOriginHeaders(cnCallbackUrl), cookie: cnStateCookie } }), env);
+  assert.equal(cnCallback.status, 302);
+  assert.equal(lastGithubTokenRedirect, 'https://accounts.aryuki.cn/api/github/callback');
+  assert.match(cnCallback.headers.get('location') || '', /^\/user\//);
+
+  const googleEnv = { ...env, GOOGLE_CLIENT_ID: 'google-client', GOOGLE_CLIENT_SECRET: 'google-secret' };
+  const googleLoginUrl = 'https://accounts.aryuki.com/api/google/login';
+  const cnGoogle = await worker.fetch(new Request(googleLoginUrl, { headers: await signedOriginHeaders(googleLoginUrl) }), googleEnv);
+  assert.equal(new URL(cnGoogle.headers.get('location')!).searchParams.get('redirect_uri'), 'https://accounts.aryuki.cn/api/google/callback');
+  const comGoogle = await worker.fetch(new Request(googleLoginUrl), googleEnv);
+  assert.equal(new URL(comGoogle.headers.get('location')!).searchParams.get('redirect_uri'), 'https://accounts.aryuki.com/api/google/callback');
+
+  sqlite.prepare('INSERT INTO apps (app_id, app_name, callback_url, secret_key) VALUES (?, ?, ?, ?)')
+    .run('tickpoint', 'TickPoint', 'https://point.aryuki.com/sso-callback', 'point-secret');
+  sqlite.prepare('INSERT INTO user_apps (uuid, app_id) VALUES (?, ?)').run(createdUuid, 'tickpoint');
+  const continueUrl = 'https://accounts.aryuki.com/api/auth/session/continue';
+  const cnAppCallback = 'https://point.aryuki.cn/sso-callback';
+  const continueSession = async () => worker.fetch(new Request(continueUrl, {
+    method: 'POST',
+    headers: { ...await signedOriginHeaders(continueUrl, 'POST'), Origin: 'https://accounts.aryuki.cn', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ app_id: 'tickpoint', redirect_uri: cnAppCallback }),
+  }), env);
+  const disabledContinue = await continueSession();
+  assert.equal(disabledContinue.status, 401);
+  assert.equal((await disabledContinue.json() as any).callback_url, 'https://point.aryuki.com/sso-callback');
+  sqlite.prepare("UPDATE apps SET allow_cn_callback = 1 WHERE app_id = 'tickpoint'").run();
+  const enabledContinue = await continueSession();
+  assert.equal(enabledContinue.status, 401);
+  assert.equal((await enabledContinue.json() as any).callback_url, cnAppCallback);
+  const cnAppLoginUrl = `${loginUrl}?app_id=tickpoint&app_redirect=${encodeURIComponent(cnAppCallback)}`;
+  const cnAppStart = await worker.fetch(new Request(cnAppLoginUrl, { headers: await signedOriginHeaders(cnAppLoginUrl) }), env);
+  assert.equal(cnAppStart.status, 302);
+  const cnAppState = new URL(cnAppStart.headers.get('location')!).searchParams.get('state')!;
+  const cnAppCookie = cnAppStart.headers.getSetCookie().find((cookie) => cookie.startsWith('oauth_state_github='))!.split(';')[0];
+  const cnAppCallbackUrl = `https://accounts.aryuki.com/api/github/callback?code=ok&state=${encodeURIComponent(cnAppState)}`;
+  const cnAppFinish = await worker.fetch(new Request(cnAppCallbackUrl, { headers: { ...await signedOriginHeaders(cnAppCallbackUrl), cookie: cnAppCookie } }), env);
+  assert.equal(new URL(cnAppFinish.headers.get('location')!).origin, 'https://point.aryuki.cn');
+  const updatePoint = async (allow: boolean, callback = 'https://point.aryuki.com/sso-callback') => worker.fetch(new Request('https://accounts.aryuki.com/admin/apps/tickpoint', {
+    method: 'PUT', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ app_name: 'TickPoint', callback_url: callback, secret_key: 'point-secret', allow_cn_callback: allow }),
+  }), env);
+  assert.equal((await updatePoint(false)).status, 200);
+  assert.equal((sqlite.prepare("SELECT allow_cn_callback FROM apps WHERE app_id = 'tickpoint'").get() as any).allow_cn_callback, 0);
+  assert.equal((await updatePoint(true)).status, 200);
+  assert.equal((sqlite.prepare("SELECT allow_cn_callback FROM apps WHERE app_id = 'tickpoint'").get() as any).allow_cn_callback, 1);
+  assert.equal((await updatePoint(true, 'https://other.example.com/sso-callback')).status, 400);
+  assert.equal((sqlite.prepare("SELECT callback_url FROM apps WHERE app_id = 'tickpoint'").get() as any).callback_url, 'https://point.aryuki.com/sso-callback');
   console.log('OAuth flow integration test passed');
 } finally { globalThis.fetch = originalFetch; }

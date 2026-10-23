@@ -4,6 +4,7 @@ import { ArrowLeft, Save, Activity, Settings, User } from 'lucide-react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { adminRequest } from './adminSessionClient';
+import { CnCallbackSwitch } from './CnCallbackSwitch';
 
 export default function AppDetails() {
     const { appId } = useParams<{ appId: string }>();
@@ -17,6 +18,7 @@ export default function AppDetails() {
     // Edit form state
     const [displayName, setDisplayName] = useState('');
     const [callbackUrl, setCallbackUrl] = useState('');
+    const [allowCnCallback, setAllowCnCallback] = useState(false);
     const [useAgentLimit, setUseAgentLimit] = useState(false);
 
     // Stats state
@@ -49,6 +51,7 @@ export default function AppDetails() {
                     setAppData(currentApp);
                     setDisplayName(currentApp.app_name);
                     setCallbackUrl(currentApp.callback_url || '');
+                    setAllowCnCallback(currentApp.allow_cn_callback === 1);
                     setUseAgentLimit(currentApp.use_agent_limit === 1);
                 }
 
@@ -97,6 +100,7 @@ export default function AppDetails() {
             body: JSON.stringify({
                 app_name: displayName,
                 callback_url: callbackUrl,
+                allow_cn_callback: allowCnCallback,
                 secret_key: appData.secret_key, // keep the same
                 use_agent_limit: useAgentLimit
             })
@@ -198,6 +202,9 @@ export default function AppDetails() {
                                 onChange={e => setCallbackUrl(e.target.value)}
                                 className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
                             />
+                        </div>
+                        <div className="md:col-span-2">
+                            <CnCallbackSwitch id="app-detail-cn-callback" checked={allowCnCallback} callbackUrl={callbackUrl} onChange={setAllowCnCallback} />
                         </div>
                         <div className="md:col-span-2">
                             <label className="block text-sm font-medium text-white/70 mb-2">Secret Key</label>

@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { generateSalt, generateJWT, verifyJWT } from './auth';
 import { durableSessionActive, issueDurableSession } from './durableSession';
-import { isAllowedOAuthRedirect } from './oauthFlow';
+import { resolveAppCallback } from './appCallback';
 import { passwordProblem } from './passwordPolicy';
 
 type Ctx = any;
@@ -814,14 +814,15 @@ async function requireAdmin(c: Ctx) {
 
 async function redirectOrJson(c: Ctx, redirectUri: string | undefined, token: string, fallbackPath = '', appId?: string) {
   if (redirectUri) {
-    const app: any = appId ? await c.env.DB.prepare('SELECT callback_url, status FROM apps WHERE app_id = ?').bind(appId).first() : null;
-    if (!app || app.status !== 'active' || !isAllowedOAuthRedirect(app.callback_url, redirectUri)) return c.json({ ok: false, message: 'Invalid callback' }, 400);
+    const app: any = appId ? await c.env.DB.prepare('SELECT callback_url, allow_cn_callback, status FROM apps WHERE app_id = ?').bind(appId).first() : null;
+    const resolved = app?.status === 'active' ? resolveAppCallback(app, redirectUri) : null;
+    if (!resolved) return c.json({ ok: false, message: 'Invalid callback' }, 400);
     const payload = await verifyJWT(token, c.env.JWT_SECRET);
     if (payload.role !== 'admin') {
       const permission = await c.env.DB.prepare('SELECT 1 FROM user_apps WHERE uuid = ? AND app_id = ? AND COALESCE(enabled, 1) = 1').bind(payload.sub, appId).first();
       if (!permission) return c.json({ ok: false, message: 'No permission for this application' }, 403);
     }
-    const url = new URL(redirectUri);
+    const url = new URL(resolved.url);
     url.searchParams.set('token', token);
     return c.json({ ok: true, token, redirect_to: url.toString() });
   }

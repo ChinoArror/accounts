@@ -1,6 +1,6 @@
 # Auth Center
 
-> Updated: 2026-09-30. The current subapp integration baseline is [统一登录与静默续期-2026-09-30.md](Subapp-Docs子应用配置文档/统一登录与静默续期-2026-09-30.md). Older examples are being updated gradually; follow the dated guide when they differ.
+> Updated: 2026-10-24. The current subapp integration baseline is [统一登录与静默续期-2026-09-30.md](Subapp-Docs子应用配置文档/统一登录与静默续期-2026-09-30.md). Older examples are being updated gradually; follow the dated guide when they differ.
 
 Auth Center is a Cloudflare Workers based identity center for SSO, account management, subapp access control, quotas, passkeys, GitHub login, email authentication, and usage analytics.
 
@@ -27,6 +27,12 @@ It is designed so child apps only receive and verify JWTs. Email, password, OTP,
 - Role-aware JWTs with `role`, `email`, `email_verified`, and `auth_provider`
 
 ## Important Auth Rules
+
+### Optional .cn app callbacks
+
+An administrator can turn **Allow .cn callback** on or off at app registration or in app details; `/dash` also shows the current state. The stored `callback_url` remains the HTTPS `.com` URL. When enabled, the same `aryuki.cn` host and exact path are also accepted, for example `https://point.aryuki.com/sso-callback` and `https://point.aryuki.cn/sso-callback`. The switch takes effect immediately for new login requests. A `.cn` request with the switch off falls back to the stored `.com` callback.
+
+Subapps should choose the Auth Center host and their callback from the **verified public request origin**. For ESA proxy traffic, verify the HMAC origin proof at the Worker before treating the request as `.cn`; do not trust `Host`, `Origin`, or `X-Forwarded-Host` alone. The proof covers `v1`, public host, method, path and query, and a timestamp within five minutes. Direct `.com` traffic uses its normal host. Auth Center validates the app ID, enabled state, callback host/path, and switch before returning a subapp redirect. In clients with an allowed-domain list, the `.com` fallback may be blocked; check the list before disabling `.cn`.
 
 - New integrations should use `jwt.role` to distinguish `admin` and `user`.
 - Existing `username === "admin"` compatibility may still exist for older subapps, but new subapps should not depend on it.
@@ -294,7 +300,9 @@ Set `ENVIRONMENT=production` only for the canonical deployment. Non-production d
 
 ### Online Documentation
 
-`/dev/docs` imports every Markdown file in `Subapp-Docs子应用配置文档/` during the build and gives each guide its own `/dev/docs/<document-name>` page. `/user/docs` imports `docs/user-guide.md`. These files are the only content sources: adding, deleting, or editing a guide is reflected automatically in the **next build and deployment**, including the sitemap, without editing a second online copy. The pages show the deployment build date (Asia/Taipei); each guide also shows its own `更新时间`/`更新` date. Update that date when revising a guide. Local edits alone cannot change the live Worker. The older guides remain available, but new subapps should start with the dated unified-login guide.
+Documentation now has explicit language URLs: `/dev/docs/en`, `/dev/docs/zh`, `/user/docs/en`, and `/user/docs/zh`; individual developer guides live at `/dev/docs/<language>/<document-name>`. Visiting the old `/dev/docs` or `/user/docs` URL selects English or Chinese from the browser's `Accept-Language` header, with Chinese as the fallback when no language is sent. An explicit `/en` or `/zh` URL always wins, and the in-page language switch keeps the current guide. Old developer-guide links redirect to the matching localized guide. Only explicit-language URLs appear in the sitemap; each has its own canonical and reciprocal `hreflang` links.
+
+The Chinese developer guides come from `Subapp-Docs子应用配置文档/*.md`; English translations with matching filenames come from `Subapp-Docs子应用配置文档/en/*.md`. User guides come from `docs/user-guide.md` and `docs/user-guide.en.md`. Every Chinese developer guide **must** have an English counterpart or the build fails. These Markdown files are the content sources: editing them updates the online pages and sitemap on the **next build and deployment**. Both languages show the build date (Asia/Taipei), plus the guide's own `更新时间`/`Updated` date. Update that date when revising a guide. Local edits alone do not change the live Worker. Older integration examples remain available; new subapps should start with the dated unified-login guide.
 
 `.github/workflows/publish-docs.yml` builds and deploys when documentation or privacy-policy sources are pushed to `master`; you can also use **Actions > Publish online documentation > Run workflow**. Configure these **repository Actions secrets** under **GitHub > Settings > Secrets and variables > Actions > New repository secret**:
 

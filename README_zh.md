@@ -1,5 +1,11 @@
 # Auth Center
 
+## 可选的 .cn 子应用回调
+
+管理员可在应用注册和详情页随时开关 **允许 .cn 回调**，`/dash` 应用列表显示当前状态。数据库中仍保存 HTTPS `.com` 的 `callback_url`；开启后，仅允许对应的 `aryuki.cn` 主机且路径完全相同的回调，例如 `https://point.aryuki.com/sso-callback` 对应 `https://point.aryuki.cn/sso-callback`。关闭后，来自 `.cn` 的登录请求回退到原 `.com` 回调地址。
+
+子应用应从**经验证的公开请求来源**决定 Auth Center 域名和回调地址。ESA 代理流量须先校验 Worker 收到的 HMAC 来源证明（版本、公开主机、请求方法、路径及查询、五分钟内的时间戳）；不能单凭 `Host`、`Origin` 或 `X-Forwarded-Host`。直连 `.com` 流量使用自身域名。Auth Center 在返回子应用跳转地址前校验应用、回调主机和路径及开关状态。若客户端限制可访问域名，关闭 `.cn` 后的 `.com` 回退可能无法打开，应先检查允许列表。
+
 > 更新时间：2026-09-30。新子应用请以[统一登录与静默续期接入指南](Subapp-Docs子应用配置文档/统一登录与静默续期-2026-09-30.md)为准；目录内旧示例正在逐步更新，冲突时以有日期的新指南为准。
 
 Auth Center 是一个基于 Cloudflare Workers 的统一身份中心，用于 SSO、账号管理、子应用权限、额度管理、Passkey、GitHub 登录、邮箱认证和访问统计。
@@ -298,7 +304,9 @@ npx wrangler deploy
 
 ### 在线文档同步
 
-`/dev/docs` 在构建时自动收录 `Subapp-Docs子应用配置文档/` 目录下的**全部 Markdown 文件**，并为每份指南生成独立的 `/dev/docs/<文档名>` 页面；`/user/docs` 读取 `docs/user-guide.md`。仓库文件是唯一内容来源，新增、删除或修改文档后，**下一次构建并部署**即可同步网页和 sitemap，无需再手工维护一份页面内容。页面展示以台北时区计算的构建日期；每份文档另显示自身的“更新时间”，修订文档时也应更新该日期。仅修改本地文件不会自动改变线上 Worker。旧指南继续可查阅，但新子应用请优先使用注明日期的统一登录指南。
+文档现在使用明确的语言路径：`/dev/docs/en`、`/dev/docs/zh`、`/user/docs/en`、`/user/docs/zh`；每篇开发者指南位于 `/dev/docs/<语言>/<文档名>`。访问旧的 `/dev/docs` 或 `/user/docs` 时，Worker 按浏览器的 `Accept-Language` 选择英文或中文；没有语言头时默认中文。URL 明确写了 `/en` 或 `/zh` 则始终优先，页面上的语言切换会保留当前文档。旧开发者文档链接会跳转到对应语言。sitemap 仅收录明确语言的页面，各自有 canonical 和互相指向的 `hreflang`。
+
+中文开发者指南读取 `Subapp-Docs子应用配置文档/*.md`，英文版读取 `Subapp-Docs子应用配置文档/en/*.md` 下的同名文件；用户指南分别读取 `docs/user-guide.md` 和 `docs/user-guide.en.md`。每篇中文开发者指南都必须有英文对应文件，否则构建失败。这些 Markdown 是网页内容来源：修改后在**下次构建并部署**时同步网页和 sitemap。两种语言都显示台北时区构建日期及文档自身的“更新时间”或 `Updated`；修订文档时也应更新日期。仅修改本地文件不会改变线上 Worker。旧接入示例仍可查阅，新子应用请优先使用注明日期的统一登录指南。
 
 `.github/workflows/publish-docs.yml` 会在文档或隐私政策源码推送到 `master` 时构建并部署；也可在 **Actions > Publish online documentation > Run workflow** 手动运行。先在 **GitHub 仓库 > Settings > Secrets and variables > Actions > New repository secret** 新建两个仓库级 Actions 密钥：
 

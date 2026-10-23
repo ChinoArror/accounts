@@ -21,7 +21,8 @@ import RegisterCodeManager from './RegisterCodeManager';
 import PermissionMatrix from './PermissionMatrix';
 import DatePicker from './DatePicker';
 import { TestAccess, TestIdentityDevPage } from './TestAccess';
-import { SubappDocsPage, UserDocsPage } from './DocsPages';
+import { DocsLanguageRedirect, SubappDocsPage, UserDocsPage } from './DocsPages';
+import { CnCallbackSwitch } from './CnCallbackSwitch';
 import { TestIdentityPreview } from './TestIdentityPreview';
 import LegalFooter from './LegalFooter';
 import PrivacyPolicy from './PrivacyPolicy';
@@ -321,6 +322,8 @@ function Dashboard() {
   const [activeTab, setActiveTab] = useState('users');
   const [users, setUsers] = useState<any[]>([]);
   const [apps, setApps] = useState<any[]>([]);
+  const [newAppCallbackUrl, setNewAppCallbackUrl] = useState('');
+  const [newAppAllowCn, setNewAppAllowCn] = useState(false);
   const [permissions, setPermissions] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -353,7 +356,6 @@ function Dashboard() {
     if (redirect && appId) {
       setSsoMode(true);
       setSsoAppId(appId);
-      setSsoRedirect(redirect);
       setSsoLoading(true);
       checkSsoSession(appId, redirect);
     }
@@ -397,8 +399,8 @@ function Dashboard() {
   const checkSsoSession = async (appId: string, redirect: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/session/continue`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app_id: appId, redirect_uri: redirect }) });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
         if (data.ok) {
             await fetch(`${API_BASE}/api/track`, {
               method: 'POST',
@@ -409,8 +411,14 @@ function Dashboard() {
             return;
         }
       }
+      if (typeof data.callback_url === 'string' && data.callback_url.startsWith('https://')) {
+        setSsoRedirect(data.callback_url);
+      } else {
+        setSsoError(data.error || 'This application callback is unavailable.');
+      }
     } catch (err) {
       console.error(err);
+      setSsoError('Unable to validate the application callback. Please retry.');
     }
     setSsoLoading(false);
   };
@@ -657,6 +665,7 @@ function Dashboard() {
     const fd = new FormData(form);
     const body: any = Object.fromEntries(fd.entries());
     body.use_agent_limit = body.use_agent_limit === 'on' ? true : false;
+    body.allow_cn_callback = newAppAllowCn;
 
     try {
       const res = await authFetch('/admin/apps', {
@@ -664,7 +673,7 @@ function Dashboard() {
         body: JSON.stringify(body)
       });
       if (res.ok) {
-        fetchApps(); form.reset();
+        fetchApps(); form.reset(); setNewAppCallbackUrl(''); setNewAppAllowCn(false);
       } else {
         const errorData = await res.json().catch(() => ({}));
         alert(`Failed to register app: ${errorData.error || res.statusText}`);
@@ -748,6 +757,8 @@ function Dashboard() {
               <div className="flex justify-center py-8">
                 <Activity className="w-7 h-7 text-[var(--primary)] animate-spin" />
               </div>
+            ) : !ssoRedirect ? (
+              <p role="alert" className="rounded-xl bg-red-500/10 p-4 text-center text-sm text-red-300">{ssoError || 'This application callback is unavailable.'}</p>
             ) : (
               <form onSubmit={handleSsoLogin} className="space-y-4">
                 {ssoError && (
@@ -1053,7 +1064,8 @@ function Dashboard() {
                       <form onSubmit={createApp} className="space-y-4">
                         <input name="app_id" placeholder="App ID (e.g. game-client)" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder-white/30" />
                         <input name="app_name" placeholder="Display Name" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder-white/30" />
-                        <input name="callback_url" placeholder="Callback URL (Optional)" className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder-white/30" />
+                        <input name="callback_url" placeholder="Callback URL (Optional)" value={newAppCallbackUrl} onChange={(event) => setNewAppCallbackUrl(event.target.value)} className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder-white/30" />
+                        <CnCallbackSwitch id="new-app-cn-callback" checked={newAppAllowCn} callbackUrl={newAppCallbackUrl} onChange={setNewAppAllowCn} />
                         <input name="secret_key" placeholder="App Secret Key" required className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder-white/30" />
 
                         <label className="flex items-center gap-3 bg-black/30 border border-white/5 p-3 rounded-xl cursor-pointer hover:bg-black/50 transition-colors">
@@ -1096,6 +1108,9 @@ function Dashboard() {
                             <h4 className="font-bold text-xl mb-1 text-white flex items-center gap-2">
                               {a.app_name}
                               {a.use_agent_limit === 1 && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded uppercase font-bold tracking-wider">Limit On</span>}
+                              <span className={`text-[10px] px-2 py-0.5 rounded uppercase font-bold tracking-wider ${a.allow_cn_callback === 1 ? 'bg-blue-500/20 text-blue-200' : 'bg-white/10 text-white/50'}`}>
+                                .cn {a.allow_cn_callback === 1 ? 'enabled' : 'disabled'}
+                              </span>
                             </h4>
                             <p className="text-xs font-mono text-emerald-300/70 mb-4">{a.app_id}</p>
                             {a.callback_url && <p className="text-sm text-white/50 bg-black/20 p-2 rounded-lg truncate" title={a.callback_url}>{a.callback_url}</p>}
@@ -1449,8 +1464,11 @@ export default function App() {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/dash" element={<Dashboard />} />
-      <Route path="/dev/docs" element={<SubappDocsPage />} />
-      <Route path="/dev/docs/:docSlug" element={<SubappDocsPage />} />
+      <Route path="/dev/docs" element={<DocsLanguageRedirect kind="dev" />} />
+      <Route path="/dev/docs/en" element={<SubappDocsPage />} />
+      <Route path="/dev/docs/zh" element={<SubappDocsPage />} />
+      <Route path="/dev/docs/:docSlug" element={<DocsLanguageRedirect kind="dev" />} />
+      <Route path="/dev/docs/:language/:docSlug" element={<SubappDocsPage />} />
       <Route path="/dev/:name" element={<TestIdentityDevPage />} />
       <Route path="/preview" element={<TestIdentityPreview />} />
       <Route path="/admin/passkey" element={<AdminPasskeyManage />} />
@@ -1465,7 +1483,8 @@ export default function App() {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/account/security" element={<AccountSecurityPage />} />
-      <Route path="/user/docs" element={<UserDocsPage />} />
+      <Route path="/user/docs" element={<DocsLanguageRedirect kind="user" />} />
+      <Route path="/user/docs/:language" element={<UserDocsPage />} />
       <Route path="/user" element={<UserIndexRedirect />} />
       <Route path="/user/:uuid" element={<UserHome />} />
       <Route path="/users/*" element={<UserLogin />} />
